@@ -35,19 +35,48 @@ struct Neutron {
     bool  alive = false;
     int   parentU = -1;
     bool  delayed = false;
+
+    // L6: визуальный след. На L1–L5 вектор остаётся пустым.
+    std::vector<sf::Vector2f> trail;
+    float trailTimer = 0.0f;
 };
 
 struct Gamma {
-    sf::Vector2f pos;
-    sf::Vector2f dir;
-    float energy_MeV;
-    float age;
-    bool alive;
+    sf::Vector2f pos{};
+    sf::Vector2f dir{};
+    float energy_MeV = 0.0f;
+    float age = 0.0f;
+    bool  alive = false;
 };
 
 struct Wall {
     sf::Vector2f a, b;
     bool selected = false;
+};
+
+// ============================================================
+// Неподвижная колонна (уровень 4 «Молекулярный мост»)
+// ============================================================
+struct Pillar {
+    sf::Vector2f pos;
+    float halfSize = L4_PILLAR_HALF_SIZE;   // половина стороны квадрата
+};
+
+// ============================================================
+// Уровень 6: неразрушимый борт (боковая стенка корзины)
+// ============================================================
+struct Barrier {
+    sf::Vector2f pos;       // центр
+    sf::Vector2f halfSize;  // половина ширины/высоты AABB
+};
+
+// ============================================================
+// Уровень 6: зона спавна игрока
+// ============================================================
+struct SpawnZone {
+    sf::Vector2f pos{ 0.0f, 0.0f };
+    float radius = L6_SPAWN_ZONE_RADIUS;
+    bool  active = false;   // false = зоны нет (например, между фазами)
 };
 
 struct Atom {

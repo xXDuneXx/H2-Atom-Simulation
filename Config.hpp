@@ -360,3 +360,84 @@ inline BondDists getBondDists(int e1, int e2) {
     if (lo == 2 && hi == 4) return { 2.6f, 3.8f };   // Na-Cl (ионная)
     return { BOND_FORM_DIST, BOND_BREAK_DIST };      // всё остальное — как было
 }
+
+// ============================================================
+// Уровень 4 — «Молекулярный мост»
+// ============================================================
+const float L4_BOX_W = 60.0f;
+const float L4_BOX_H = 36.0f;
+
+const float L4_TEMP_C = -273.15f;   // абсолютный ноль
+const float L4_GRAVITY_MAG = 0.01f;
+const float L4_GRAVITY_DIR_DEG = 90.0f;      // вниз
+
+const int   L4_START_H = 100;
+const int   L4_START_O = 50;
+
+const float L4_SPAWN_COOLDOWN = 0.2f;       // сек, минимум между спавнами
+const float L4_BRIDGE_HOLD_TIME = 30.0f;      // сек, сколько должен продержаться мостик
+
+// Колонны — квадраты. halfSize — половина стороны.
+// Было 2.5 (радиус) → стало 3.75 (половина стороны): +50% к размеру.
+const float L4_PILLAR_HALF_SIZE = 3.75f;
+const float L4_PILLAR_X = 18.0f;          // |x| боковых колонн (центр — 0)
+const float L4_PILLAR_TOUCH_DIST = 1.5f;  // доп. отступ касания колонны
+
+const float L4_TASK_PANEL_H = 420.0f;     // высота панели задания L4
+
+// ============================================================
+// Уровень 6 — «Взрывные кольца» (Neutron Basketball)
+// ============================================================
+const float L6_BOX_W = 310.0f;
+const float L6_BOX_H = 100.0f;
+
+const float L6_TEMP_C = 30.0f;            // температура среды
+
+const float L6_GRAVITY_MAG = 0.04f;         // фиксированная гравитация
+const float L6_GRAVITY_DIR_DEG = 90.0f;
+
+// Нейтроны падают в 3 раза слабее атомов — легче целиться по дальним кольцам.
+const float L6_NEUTRON_GRAVITY_MUL = 1.0f / 3.0f;
+
+const int   L6_URANIUM_PER_RING = 4;       // шаров урана на кольцо
+const int   L6_RING_COUNT = 4;          // всего колец (= фаз)
+
+const float L6_PILLAR_HALF_SIZE = 3.0f;  // половина стороны колонны-корзины
+
+// Стартовая площадка — колонна игрока
+const float L6_START_X = -22.0f;
+const float L6_START_Y = 6.0f;
+
+// Кольца (центр колонны). Интервалы между кольцами ПРОГРЕССИВНО
+// растут: 26 → 34 → 43. Первое кольцо близко (легко попасть),
+// последнее — самое сложное. Высоты чередуются для разнообразия
+// траекторий.
+const float L6_RING_X[4] = { 12.0f,  38.0f,  72.0f, 115.0f };
+const float L6_RING_Y[4] = { -4.0f, -14.0f,  -8.0f, -20.0f };
+
+// Уран на кольце: сдвигаем вверх над колонной, чтобы визуально
+// «лежал на площадке».
+const float L6_URANIUM_Y_OFFSET = 3.5f;   // над центром колонны
+const float L6_URANIUM_SPACING = 0.95f;   // горизонтальный шаг между шарами
+
+// Борта (неразрушимые)
+const float L6_BARRIER_HALF_W = 0.4f;   // тонкие стенки
+const float L6_BARRIER_HALF_H = 1.4f;   // по высоте
+
+// Зона спавна игрока
+const float L6_SPAWN_ZONE_RADIUS = 4.0f;
+
+// Нейтроны
+const float L6_NEUTRON_DRAG_SCALE = 0.0f;    // почти нет трения
+const float L6_PILLAR_RESTITUTION = 0.4f;     // отскок от колонн
+const float L6_SPAWN_SPEED_MUL = 1.2f;        // добросить до дальних колец
+const float L6_NEUTRON_MIN_SPEED = 0.15f;     // ниже — нейтрон «умер»
+const float L6_NEUTRON_TRAIL_MAX = 1.5f;      // сек — длина следа
+const float L6_NEUTRON_TRAIL_STEP = 0.04f;    // сек — шаг между точками следа
+
+// Пауза между фазовым переходом (сек) — короткая, чтобы игрок
+// заметил «вспышку» и переезд камеры.
+const float L6_PHASE_DELAY = 0.6f;
+
+// Панель задачи
+const float L6_TASK_PANEL_H = 360.0f;

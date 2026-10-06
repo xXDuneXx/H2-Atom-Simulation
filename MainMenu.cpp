@@ -183,6 +183,8 @@ namespace {
         return sf::FloatRect({ cx - w * 0.5f, cy - h * 0.5f }, { w, h });
     }
 
+    const int LEVEL_COUNT = 5;
+
     sf::FloatRect computeLevelButtonRect(sf::Vector2u winSize, int idx) {
         float S = std::max(1.0f, (float)winSize.y / 1080.0f);
         float w = LEVEL_BTN_W_SCALE * S;
@@ -190,8 +192,11 @@ namespace {
         float gap = LEVEL_BTN_GAP_SCALE * S;
         float cx = (float)winSize.x * 0.5f;
         float cy = (float)winSize.y * LEVEL_BTN_CY_FRAC;
-        float y = cy + idx * (h + gap);
-        return sf::FloatRect({ cx - w * 0.5f, y - h * 0.5f }, { w, h });
+
+        float totalH = LEVEL_COUNT * h + (LEVEL_COUNT - 1) * gap;
+        float startY = cy - totalH * 0.5f;
+        float y = startY + idx * (h + gap);
+        return sf::FloatRect({ cx - w * 0.5f, y }, { w, h });
     }
 
     // --- заголовок кнопки уровня: принимает sf::String ---
@@ -844,7 +849,7 @@ void MainMenu::updateHover(sf::Vector2i mousePos, sf::Vector2u winSize) {
     }
     else if (m_view == View::LevelSelect) {
         m_hoveredLevelIndex = -1;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < LEVEL_COUNT; ++i) {
             if (computeLevelButtonRect(winSize, i).contains(m)) {
                 m_hoveredLevelIndex = i;
                 break;
@@ -934,15 +939,13 @@ int MainMenu::handleEvent(const sf::Event& event, sf::Vector2u winSize,
                     m_view = View::ModeSelect;
                     return -1;
                 }
-                if (computeLevelButtonRect(winSize, 0).contains(m)) {
-                    return 3;   // Level 1
-                }
-                if (computeLevelButtonRect(winSize, 1).contains(m)) {
-                    return 4;   // Level 2
-                }
-                if (computeLevelButtonRect(winSize, 2).contains(m)) {
-                    return 5;   // Level 3
-                }
+                if (computeLevelButtonRect(winSize, 0).contains(m)) return 3;
+                if (computeLevelButtonRect(winSize, 1).contains(m)) return 4;
+                if (computeLevelButtonRect(winSize, 2).contains(m)) return 5;
+                if (computeLevelButtonRect(winSize, 3).contains(m)) return 6;
+
+                // ← НОВОЕ: кнопка 6-го уровня (индекс 4)
+                if (computeLevelButtonRect(winSize, 4).contains(m)) return 7;
             }
             else if (m_view == View::Settings) {
                 // Сначала — пункты открытого дропдауна (три пункта).
@@ -1390,6 +1393,21 @@ void MainMenu::render(sf::RenderWindow& window,
             tr(Loc::Level3Title, m_settings.language),
             tr(Loc::Level3Subtitle, m_settings.language),
             m_hoveredLevelIndex == 2, S);
+
+        sf::FloatRect levelRect3 = computeLevelButtonRect(winSize, 3);
+        drawLevelButton(window, font, fontLoaded, levelRect3,
+            4,
+            tr(Loc::Level4Title, m_settings.language),
+            tr(Loc::Level4Subtitle, m_settings.language),
+            m_hoveredLevelIndex == 3, S);
+
+        // ← НОВОЕ: 6-й уровень
+        sf::FloatRect levelRect4 = computeLevelButtonRect(winSize, 4);
+        drawLevelButton(window, font, fontLoaded, levelRect4,
+            6,
+            tr(Loc::Level6Title, m_settings.language),
+            tr(Loc::Level6Subtitle, m_settings.language),
+            m_hoveredLevelIndex == 4, S);
 
         drawButton(window, font, fontLoaded,
             computeModeBackRect(winSize),

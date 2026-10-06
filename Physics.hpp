@@ -46,3 +46,22 @@ void applyWallsToAtoms(std::vector<Atom>& atoms,
 
 // НОВОЕ: реакция 2Na + 2H2O → 2NaOH + H2 + «взрыв»
 void applySodiumWaterReaction(std::vector<Atom>& atoms);
+
+// Столкновения атомов с неподвижными колоннами (уровень 4)
+void applyPillarsToAtoms(std::vector<Atom>& atoms,
+    const std::vector<Pillar>& pillars);
+
+// НОВОЕ: столкновения атомов с неразрушимыми бортами (уровень 6).
+// Без этого уран выпадает из «корзины» — барьеры действовали
+// только на нейтроны.
+void applyBarriersToAtoms(std::vector<Atom>& atoms,
+    const std::vector<Barrier>& barriers);
+
+// Готовая молекула воды: O + 2H, угол 104.5°, готовые ковалентные связи,
+// общая скорость. baseIndex — индекс, с которого эти 3 атома будут
+// добавлены в вектор atoms (используется для корректных bond-ссылок).
+// Возвращает [0] = O, [1] = H1, [2] = H2.
+std::array<Atom, 3> makeWaterMolecule(int baseIndex,
+    sf::Vector2f center,
+    float rotationRad,
+    sf::Vector2f vel);

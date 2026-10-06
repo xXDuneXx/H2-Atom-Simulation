@@ -1,0 +1,4 @@
+// app.rc — Windows resource script
+// Вшивает иконку в .exe, чтобы она показывалась в проводнике.
+
+IDI_ICON1 ICON "icon.ico"

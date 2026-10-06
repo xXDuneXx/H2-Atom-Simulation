@@ -124,6 +124,45 @@ struct UIState {
     bool  taskClTimerRunning = false;
     float taskClFlashTimer = 0.0f;  // короткая красная вспышка при сбросе
 
+    // --- Уровень 4 — «Молекулярный мост» ---
+    int  stockH = 0;               // оставшийся запас H
+    int  stockO = 0;               // оставшийся запас O
+    bool stockLimited = false;     // включён ли лимит (только L4)
+
+    bool  spawnWaterSelected = false;   // выбран пункт Water в Spawn Menu
+    float waterSpawnRotation = 0.0f;    // текущий угол поворота превью H2O
+
+    float spawnCooldownTimer = 0.0f;    // 0..L4_SPAWN_COOLDOWN
+
+    int   taskPillarsConnected = 0;     // 0..3
+    float taskBridgeHoldTimer = 0.0f;   // сек, сколько держится мостик
+    bool  taskBridgeTimerRunning = false;
+
+    // Неподвижные препятствия (только L4)
+    std::vector<Pillar> pillars;
+
+    // --- Уровень 6 — «Взрывные кольца» ---
+    std::vector<Barrier> barriers;     // неразрушимые борта
+    SpawnZone activeSpawnZone;         // активная зона спавна (одна)
+
+    int  ringIndex = 0;                 // 0..3 — текущее кольцо
+    int  ringUraniumRemaining = 0;      // живого урана на текущем кольце
+    int  ringUraniumTotal = 0;          // сколько было изначально
+
+    // Для плавного перелёта камеры между кольцами
+    bool  cameraTransitionActive = false;
+    sf::Vector2f cameraTransitionTarget{ 0.0f, 0.0f };
+
+    // Микро-пауза после детонации кольца, до перелёта
+    float phaseDelayTimer = 1.0f;
+
+    // Панель задачи L6 (заполняется в UI.cpp)
+    sf::FloatRect l6HintButtonRect{ {-1.0f, -1.0f}, {0.0f, 0.0f} };
+
+    // --- Диалог выбора карты при входе в песочницу ---
+    bool sandboxAskDialog = false;
+    bool sandboxEverEntered = false;   // ← новое
+
     // Прямоугольник кнопки «Show hint» — заполняется в drawEverything
     // для текущей фазы. Используется в AtomSimulation.cpp для hit-теста:
     // нельзя захардкодить Y, потому что цель бывает в 2 строки (\n),
@@ -141,6 +180,34 @@ enum class DrawPass {
     World,
     UI,
 };
+
+// ============================================================
+// Хелперы Spawn Menu (общие для AtomSimulation.cpp и UI.cpp)
+// ============================================================
+// На L4 к обычным строкам (H, O) добавляется строка «Water (H2O)».
+// В песочнице — тоже добавляется Water в конец списка.
+// Индексы:
+//   !campaignMode            → 0..N-1 = атомы, N = Water
+//   campaignLevel == 1       → [0] = H
+//   campaignLevel == 2       → [0] = H, [1] = O
+//   campaignLevel == 3       → [0] = H, [1] = O, [2] = Cl
+//   campaignLevel == 4       → [0] = H, [1] = O, [2] = Water
+inline bool isWaterRow(int row, bool campaignMode, int campaignLevel) {
+    if (campaignMode && campaignLevel == 4) return row == 2;
+    if (!campaignMode) return row == (int)ATOM_TYPES.size();
+    return false;
+}
+
+// Строка Spawn Menu → elementId (для иконки/цвета) или -1 для воды
+inline int rowElementId(int row, bool campaignMode, int campaignLevel) {
+    if (isWaterRow(row, campaignMode, campaignLevel)) return -1;
+    return row;
+}
+
+// Заблокированы ли регуляторы на L4
+inline bool l4ControlsLocked(const UIState& ui) {
+    return ui.campaignMode && ui.campaignLevel == 4;
+}
 
 // Единая точка входа рендеринга.
 // ui передаётся НЕ константным — drawEverything записывает в него

@@ -1321,3 +1321,185 @@ Atom makeHydrogen(sf::Vector2f pos, sf::Vector2f vel) {
 Atom makeOxygen(sf::Vector2f pos, sf::Vector2f vel) {
     return makeAtom(1, pos, vel);
 }
+
+// ============================================================
+// Столкновения атомов с неподвижными квадратными колоннами (уровень 4)
+// Коллизия: AABB (квадрат) vs. окружность (атом).
+// ============================================================
+void applyPillarsToAtoms(std::vector<Atom>& atoms,
+    const std::vector<Pillar>& pillars)
+{
+    for (auto& atom : atoms) {
+        for (const auto& p : pillars) {
+            const float h = p.halfSize;
+            const float r = atom.radius;
+
+            // Ближайшая точка AABB к центру атома
+            float cX = std::clamp(atom.pos.x, p.pos.x - h, p.pos.x + h);
+            float cY = std::clamp(atom.pos.y, p.pos.y - h, p.pos.y + h);
+            float dx = atom.pos.x - cX;
+            float dy = atom.pos.y - cY;
+            float d2 = dx * dx + dy * dy;
+
+            if (d2 >= r * r) continue;   // нет коллизии
+
+            if (d2 > 1e-8f) {
+                // Центр атома вне квадрата — выталкиваем по нормали
+                float d = std::sqrt(d2);
+                float nx = dx / d;
+                float ny = dy / d;
+                float overlap = r - d;
+                atom.pos.x += nx * overlap;
+                atom.pos.y += ny * overlap;
+
+                float vn = atom.vel.x * nx + atom.vel.y * ny;
+                if (vn < 0.0f) {
+                    atom.vel.x -= (1.0f + WALL_RESTITUTION) * vn * nx;
+                    atom.vel.y -= (1.0f + WALL_RESTITUTION) * vn * ny;
+                }
+            }
+            else {
+                // Центр атома внутри квадрата — выталкиваем через ближайшую грань
+                float left = atom.pos.x - (p.pos.x - h);
+                float right = (p.pos.x + h) - atom.pos.x;
+                float top = atom.pos.y - (p.pos.y - h);
+                float bottom = (p.pos.y + h) - atom.pos.y;
+
+                float mn = left;
+                int face = 0;   // 0=left, 1=right, 2=top, 3=bottom
+                if (right < mn) { mn = right; face = 1; }
+                if (top < mn) { mn = top; face = 2; }
+                if (bottom < mn) { mn = bottom; face = 3; }
+
+                switch (face) {
+                case 0:
+                    atom.pos.x = p.pos.x - h - r;
+                    if (atom.vel.x > 0.0f) atom.vel.x = -atom.vel.x * WALL_RESTITUTION;
+                    break;
+                case 1:
+                    atom.pos.x = p.pos.x + h + r;
+                    if (atom.vel.x < 0.0f) atom.vel.x = -atom.vel.x * WALL_RESTITUTION;
+                    break;
+                case 2:
+                    atom.pos.y = p.pos.y - h - r;
+                    if (atom.vel.y > 0.0f) atom.vel.y = -atom.vel.y * WALL_RESTITUTION;
+                    break;
+                case 3:
+                    atom.pos.y = p.pos.y + h + r;
+                    if (atom.vel.y < 0.0f) atom.vel.y = -atom.vel.y * WALL_RESTITUTION;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// Столкновения атомов с неразрушимыми бортами (уровень 6).
+// AABB (борт) vs. окружность (атом) — та же схема, что и у колонн.
+// Без этой функции уран свободно сваливался с колонны вбок:
+// ui.barriers передавались только в stepNeutrons, а к атомам
+// не применялись.
+// ============================================================
+void applyBarriersToAtoms(std::vector<Atom>& atoms,
+    const std::vector<Barrier>& barriers)
+{
+    for (auto& atom : atoms) {
+        for (const auto& b : barriers) {
+            const float hx = b.halfSize.x;
+            const float hy = b.halfSize.y;
+            const float r = atom.radius;
+
+            // Ближайшая точка AABB к центру атома
+            float cX = std::clamp(atom.pos.x, b.pos.x - hx, b.pos.x + hx);
+            float cY = std::clamp(atom.pos.y, b.pos.y - hy, b.pos.y + hy);
+            float dx = atom.pos.x - cX;
+            float dy = atom.pos.y - cY;
+            float d2 = dx * dx + dy * dy;
+
+            if (d2 >= r * r) continue;
+
+            if (d2 > 1e-8f) {
+                // Центр атома вне AABB — выталкиваем по нормали
+                float d = std::sqrt(d2);
+                float nx = dx / d;
+                float ny = dy / d;
+                float overlap = r - d;
+                atom.pos.x += nx * overlap;
+                atom.pos.y += ny * overlap;
+
+                float vn = atom.vel.x * nx + atom.vel.y * ny;
+                if (vn < 0.0f) {
+                    atom.vel.x -= (1.0f + WALL_RESTITUTION) * vn * nx;
+                    atom.vel.y -= (1.0f + WALL_RESTITUTION) * vn * ny;
+                }
+            }
+            else {
+                // Центр внутри AABB — выталкиваем через ближайшую грань
+                float left = atom.pos.x - (b.pos.x - hx);
+                float right = (b.pos.x + hx) - atom.pos.x;
+                float top = atom.pos.y - (b.pos.y - hy);
+                float bottom = (b.pos.y + hy) - atom.pos.y;
+
+                float mn = left;
+                int face = 0;
+                if (right < mn) { mn = right; face = 1; }
+                if (top < mn) { mn = top; face = 2; }
+                if (bottom < mn) { mn = bottom; face = 3; }
+
+                switch (face) {
+                case 0:
+                    atom.pos.x = b.pos.x - hx - r;
+                    if (atom.vel.x > 0.0f) atom.vel.x = -atom.vel.x * WALL_RESTITUTION;
+                    break;
+                case 1:
+                    atom.pos.x = b.pos.x + hx + r;
+                    if (atom.vel.x < 0.0f) atom.vel.x = -atom.vel.x * WALL_RESTITUTION;
+                    break;
+                case 2:
+                    atom.pos.y = b.pos.y - hy - r;
+                    if (atom.vel.y > 0.0f) atom.vel.y = -atom.vel.y * WALL_RESTITUTION;
+                    break;
+                case 3:
+                    atom.pos.y = b.pos.y + hy + r;
+                    if (atom.vel.y < 0.0f) atom.vel.y = -atom.vel.y * WALL_RESTITUTION;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+
+// ============================================================
+// Готовая молекула H2O
+// ============================================================
+std::array<Atom, 3> makeWaterMolecule(int baseIndex,
+    sf::Vector2f center,
+    float rotationRad,
+    sf::Vector2f vel)
+{
+    std::array<Atom, 3> result;
+
+    const float halfAng = WATER_ANGLE_DEG * 0.5f * 3.14159265f / 180.0f;
+    const float bLen = getMorsePair(0, 1).re;   // O–H ~ 0.97 Å
+
+    sf::Vector2f h1Local = rotateVec(
+        { std::cos(halfAng),  std::sin(halfAng) }, rotationRad) * bLen;
+    sf::Vector2f h2Local = rotateVec(
+        { std::cos(halfAng), -std::sin(halfAng) }, rotationRad) * bLen;
+
+    Atom o = makeAtom(1, center, vel);
+    o.bonds = { baseIndex + 1, baseIndex + 2, -1, -1 };
+
+    Atom h1 = makeAtom(0, center + h1Local, vel);
+    h1.bonds = { baseIndex, -1, -1, -1 };
+
+    Atom h2 = makeAtom(0, center + h2Local, vel);
+    h2.bonds = { baseIndex, -1, -1, -1 };
+
+    result[0] = o;
+    result[1] = h1;
+    result[2] = h2;
+    return result;
+}

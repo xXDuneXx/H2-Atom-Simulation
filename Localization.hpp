@@ -274,6 +274,14 @@ namespace Loc {
     constexpr LocString HideHint = { "Hide hint", "Скрыть подсказку" };
     constexpr LocString FinishLevel = { "Back to menu", "В меню" };
 
+    // --- Диалог при входе в песочницу ---
+    constexpr LocString SandboxAskTitle = {
+        "Choose a map", "Выберите карту" };
+    constexpr LocString SandboxDefault = {
+        "Standard sandbox", "Стандартная" };
+    constexpr LocString SandboxKeepLast = {
+        "Keep last layout", "Оставить прошлую" };
+
     // --- Уровень 2: дополнительный хинт фазы 1 (ПКМ-меню) ---
     // Важно: без выделения ПКМ-меню не откроется — это надо
     // объяснить прямым текстом.
@@ -353,4 +361,75 @@ namespace Loc {
     constexpr LocString Hint3_2_3 = {
         "Keep 10+ single Cl atoms for 30 seconds.",
         "Держите 10+ одиночных Cl в течение 30 секунд." };
+
+    // ============================================================
+    // Уровень 4 — «Молекулярный мост»
+    // ============================================================
+    constexpr LocString Level4Title = {
+        "Molecular bridge", "Молекулярный мост" };
+    constexpr LocString Level4Subtitle = {
+        "Build a continuous water chain between the pillars",
+        "Постройте непрерывную водную цепь между колоннами" };
+
+    constexpr LocString Goal4Phase1 = {
+        "Goal: connect all three pillars with one\ncontinuous chain of water molecules.",
+        "Цель: соедините все три колонны единой\nнепрерывной цепью молекул воды." };
+    constexpr LocString Goal4Complete = { "Goal complete!", "Цель достигнута!" };
+
+    constexpr LocString Hint4_1 = {
+        "1. Spawn H2O via Spawn Menu.",
+        "1. Спавньте H2O через меню спавна." };
+    constexpr LocString Hint4_2 = {
+        "2. Hold Ctrl + wheel to rotate the molecule.",
+        "2. Удерживайте Ctrl + колесо, чтобы повернуть молекулу." };
+    constexpr LocString Hint4_3 = {
+        "3. Connect all three pillars in one chain.",
+        "3. Соедините все три колонны одной цепью." };
+    constexpr LocString Hint4_4 = {
+        "4. The bridge must hold for 10 seconds.",
+        "4. Мостик должен держаться 10 секунд." };
+    constexpr LocString Hint4Gravity = {
+        "Note: weak gravity pulls everything down.",
+        "Внимание: слабая гравитация тянет всё вниз." };
+    constexpr LocString Hint4NoPause = {
+        "[Space] pause is disabled on this level.",
+        "[Space] пауза отключена на этом уровне." };
+
+    constexpr LocString TaskPillarsPrefix = { "Pillars:", "Колонны:" };
+    constexpr LocString TaskBridgePrefix = { "Hold:",    "Держится:" };
+    constexpr LocString TaskStockPrefix = { "Stock",    "Запас" };
+
+    constexpr LocString AtomWater = { "Water (H2O)", "Вода (H2O)" };
+
+    constexpr LocString Level4CompleteDesc = {
+        "A stable water bridge spans all three pillars.",
+        "Устойчивый водный мостик соединяет все три колонны." };
+
+    // ============================================================
+    // Уровень 6 — «Взрывные кольца»
+    // ============================================================
+    constexpr LocString Level6Title = {
+        "Explosive rings", "Взрывные кольца" };
+    constexpr LocString Level6Subtitle = {
+        "Throw neutrons into uranium rings(In development)",
+        "Забросьте нейтроны в урановые кольца(В разработке)" };
+
+    constexpr LocString Goal6Phase1 = {
+        "Goal: detonate all uranium on the current ring.",
+        "Цель: детонируйте весь уран на текущем кольце." };
+    constexpr LocString Goal6Complete = { "Goal complete!", "Цель достигнута!" };
+
+    constexpr LocString TaskRingsPrefix = { "Rings:", "Кольца:" };
+    constexpr LocString TaskUraniumPrefix = { "Uranium:", "Уран:" };
+
+    constexpr LocString HintL6_1 = {
+        "Hold LMB inside the glowing zone, drag to aim,",
+        "Удерживайте ЛКМ в светящейся зоне, тяните для прицела," };
+    constexpr LocString HintL6_2 = {
+        "release to throw the neutron.",
+        "отпустите — нейтрон полетит." };
+
+    constexpr LocString Level6CompleteDesc = {
+        "All uranium rings detonated.",
+        "Все урановые кольца детонированы." };
 }

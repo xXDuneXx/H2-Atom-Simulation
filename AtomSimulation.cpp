@@ -14,6 +14,11 @@ int main() {
     sf::RenderWindow window(sf::VideoMode({ 1000, 700 }), "H2 Fusion Simulation", sf::Style::Default);
     window.setFramerateLimit(60);
 
+    // Иконка приложения (icon.png должна лежать рядом с .exe)
+    sf::Image appIcon;
+    const bool iconLoaded = appIcon.loadFromFile("icon.png");
+    if (iconLoaded) window.setIcon(appIcon);
+
     SpatialGrid grid;
     grid.init(-BOX_MAX * 0.5f, BOX_MAX, VDW_CUTOFF);   // сетка всегда покрывает BOX_MAX
     sf::View camera(sf::Vector2f(0.0f, 0.0f), sf::Vector2f(30.0f, 21.0f));
@@ -32,7 +37,7 @@ int main() {
     }
 
     UIState ui;
-    ui.batchCounts.assign(ATOM_TYPES.size(), 10);
+    ui.batchCounts.assign(ATOM_TYPES.size() + 1, 10);  // +Water row в песочнице
 
     float physStepAccumulator = 0.0f;
 
@@ -212,11 +217,13 @@ int main() {
         // В L2 доступны H и O — 2 строки. Это должно совпадать
         // с rowCount в UI.cpp, иначе hit-тесты промахиваются.
         int spawnRowCount;
-        if (!ui.campaignMode)               spawnRowCount = (int)ATOM_TYPES.size();
+        if (!ui.campaignMode)               spawnRowCount = (int)ATOM_TYPES.size() + 1;
         else if (ui.campaignLevel == 1)     spawnRowCount = 1;
         else if (ui.campaignLevel == 2)     spawnRowCount = 2;
         else if (ui.campaignLevel == 3)     spawnRowCount = 3;
-        else                                spawnRowCount = (int)ATOM_TYPES.size();
+        else if (ui.campaignLevel == 4)     spawnRowCount = 3;  // H, O, Water
+        else if (ui.campaignLevel == 6)     spawnRowCount = 0;  // ← НОВОЕ: L6 без меню
+        else                                spawnRowCount = (int)ATOM_TYPES.size() + 1;
         const float mTotalH = mHeaderH + (float)spawnRowCount * mRowH + mFooterH;
 
         const float rIconX = ROW_ICON_X * S;
@@ -282,6 +289,7 @@ int main() {
                             sf::Style::Default, sf::State::Windowed);
                     }
                     window.setFramerateLimit(60);
+                    if (iconLoaded) window.setIcon(appIcon);   // ← вернуть иконку
                     float aspect = (float)window.getSize().x / (float)window.getSize().y;
                     sf::Vector2f size = camera.getSize();
                     size.x = size.y * aspect;
@@ -307,10 +315,45 @@ int main() {
             if (state == GameState::MainMenu) {
                 int action = mainMenu.handleEvent(*event, winSize, rng);
                 if (action == 0) {
-                    // Sandbox → обычная симуляция
+                    // Sandbox → обычная симуляция.
                     state = GameState::Simulation;
                     ui.campaignMode = false;
                     ui.campaignLevel = 0;
+
+                    if (ui.sandboxEverEntered) {
+                        // Уже играли в песочнице — спрашиваем, что делать
+                        // с прошлой картой.
+                        ui.sandboxAskDialog = true;
+                    }
+                    else {
+                        // Первый заход — сразу ставим стандартную карту,
+                        // без бессмысленного диалога.
+                        atoms.clear();
+                        walls.clear();
+                        neutrons.clear();
+                        gammas.clear();
+                        delayedPool.clear();
+                        ui.pillars.clear();
+                        atoms.push_back(makeHydrogen({ -2.0f, 0.0f },
+                            { 0.5f, 0.0f }));
+                        atoms.push_back(makeHydrogen({ 2.0f, 0.0f },
+                            { -0.5f, 0.0f }));
+                        ui.boxSizeX = BOX_DEFAULT;
+                        ui.boxSizeY = BOX_DEFAULT;
+                        ui.targetTempCelsius = TEMP_DEFAULT_C;
+                        ui.gravityEnabled = false;
+                        ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                        ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                        ui.speedSlider.value = 1.0f;
+                        ui.savedSpeedValue = 1.0f;
+                        ui.focusedAtomIndex = -1;
+                        ui.stockLimited = false;
+                        ui.stockH = 0;
+                        ui.stockO = 0;
+                        ui.spawnCooldownTimer = 0.0f;
+                        physStepAccumulator = 0.0f;
+                        ui.sandboxEverEntered = true;
+                    }
                 }
                 else if (action == 2) window.close();            // Exit
                 else if (action == 4) {
@@ -330,6 +373,23 @@ int main() {
                     ui.selectedSpawnType = -1;
                     ui.focusedAtomIndex = -1;
 
+                    // ← СБРОС КАРТЫ ОТ ПРОШЛЫХ УРОВНЕЙ
+                    ui.boxSizeX = BOX_DEFAULT;
+                    ui.boxSizeY = BOX_DEFAULT;
+                    ui.gravityEnabled = false;
+                    ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                    ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                    ui.pillars.clear();
+                    ui.barriers.clear();
+                    ui.activeSpawnZone.active = false;
+
+                    {
+                        float aspect = (float)winSize.x / (float)winSize.y;
+                        sf::Vector2f cs(21.0f * aspect, 21.0f);
+                        camera.setSize(cs);
+                        camera.setCenter({ 0.0f, 0.0f });
+                    }
+
                     atoms.clear();
                     walls.clear();
                     neutrons.clear();
@@ -341,6 +401,8 @@ int main() {
                     ui.batchCounts[0] = 10;   // Hydrogen
                     ui.batchCounts[1] = 5;    // Oxygen
                     physStepAccumulator = 0.0f;
+
+                    ui.spawnMenuOpen = true;
 
                     ui.taskPhase = 1;
                     ui.taskH2Count = 0;
@@ -374,6 +436,27 @@ int main() {
                     ui.selectedSpawnType = -1;
                     ui.focusedAtomIndex = -1;
 
+                    // ← СБРОС КАРТЫ ОТ ПРОШЛЫХ УРОВНЕЙ:
+                    //   размер коробки, гравитация, препятствия, борта,
+                    //   зона спавна L6.
+                    ui.boxSizeX = BOX_DEFAULT;
+                    ui.boxSizeY = BOX_DEFAULT;
+                    ui.gravityEnabled = false;
+                    ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                    ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                    ui.pillars.clear();
+                    ui.barriers.clear();
+                    ui.activeSpawnZone.active = false;
+
+                    // Сбрасываем камеру к дефолтному виду (иначе после
+                    // L4 она может быть отзумлена под 60×36).
+                    {
+                        float aspect = (float)winSize.x / (float)winSize.y;
+                        sf::Vector2f cs(21.0f * aspect, 21.0f);
+                        camera.setSize(cs);
+                        camera.setCenter({ 0.0f, 0.0f });
+                    }
+
                     // Пустая коробка, только водород в batchCounts
                     atoms.clear();
                     walls.clear();
@@ -384,6 +467,9 @@ int main() {
                     ui.batchCounts[0] = 10;
                     physStepAccumulator = 0.0f;
 
+                    // Меню спавна открыто, т.к. это обучающий уровень
+                    ui.spawnMenuOpen = true;
+
                     // Сбрасываем прогресс задач и висящие pending-флаги
                     ui.taskPhase = 1;
                     ui.taskH2Count = 0;
@@ -393,6 +479,7 @@ int main() {
                     ui.taskTextAlpha = 1.0f;
                     ui.nextLevelButtonHovered = false;
                     ui.copyPendingSpawn = false;
+                    ui.hintButtonOpen = false;
                 }
                 else if (action == 5) {
                     // Campaign level 3 → Acids and ions
@@ -412,6 +499,23 @@ int main() {
                     ui.selectedSpawnType = -1;
                     ui.focusedAtomIndex = -1;
 
+                    // ← СБРОС КАРТЫ ОТ ПРОШЛЫХ УРОВНЕЙ
+                    ui.boxSizeX = BOX_DEFAULT;
+                    ui.boxSizeY = BOX_DEFAULT;
+                    ui.gravityEnabled = false;
+                    ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                    ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                    ui.pillars.clear();
+                    ui.barriers.clear();
+                    ui.activeSpawnZone.active = false;
+
+                    {
+                        float aspect = (float)winSize.x / (float)winSize.y;
+                        sf::Vector2f cs(21.0f * aspect, 21.0f);
+                        camera.setSize(cs);
+                        camera.setCenter({ 0.0f, 0.0f });
+                    }
+
                     atoms.clear();
                     walls.clear();
                     neutrons.clear();
@@ -424,6 +528,8 @@ int main() {
                     ui.batchCounts[1] = 5;    // Oxygen
                     ui.batchCounts[2] = 5;    // Chlorine
                     physStepAccumulator = 0.0f;
+
+                    ui.spawnMenuOpen = true;
 
                     ui.taskPhase = 0;
                     ui.taskH2Count = 0;
@@ -445,9 +551,250 @@ int main() {
                     ui.nextLevelButtonHovered = false;
                     ui.copyPendingSpawn = false;
                 }
+                else if (action == 6) {
+                    // Campaign level 4 → Molecular bridge
+                    state = GameState::Simulation;
+                    ui.campaignMode = true;
+                    ui.campaignLevel = 4;
+
+                    ui.boxSizeX = L4_BOX_W;
+                    ui.boxSizeY = L4_BOX_H;
+
+                    ui.targetTempCelsius = L4_TEMP_C;
+                    ui.tempSliderDragging = false;
+                    ui.tempEditing = false;
+
+                    ui.gravityEnabled = true;
+                    ui.gravityMagnitude = L4_GRAVITY_MAG;
+                    ui.gravityDirDeg = L4_GRAVITY_DIR_DEG;
+                    ui.gravityDirDragging = false;
+                    ui.gravityMagDragging = false;
+
+                    ui.speedSlider.value = 1.0f;
+                    ui.savedSpeedValue = 1.0f;
+
+                    ui.boxSizeXDragging = false;
+                    ui.boxSizeYDragging = false;
+                    ui.selectedSpawnType = -1;
+                    ui.spawnWaterSelected = false;
+                    ui.waterSpawnRotation = 0.0f;
+                    ui.focusedAtomIndex = -1;
+
+                    atoms.clear();
+                    walls.clear();
+                    neutrons.clear();
+                    gammas.clear();
+                    delayedPool.clear();
+                    ui.pillars.clear();
+                    ui.pillars.push_back({ { -L4_PILLAR_X, 0.0f }, L4_PILLAR_HALF_SIZE });
+                    ui.pillars.push_back({ {  0.0f,        0.0f }, L4_PILLAR_HALF_SIZE });
+                    ui.pillars.push_back({ {  L4_PILLAR_X, 0.0f }, L4_PILLAR_HALF_SIZE });
+
+                    ui.batchCounts.assign(3, 0);
+                    ui.batchCounts[0] = 5;   // H
+                    ui.batchCounts[1] = 5;   // O
+                    ui.batchCounts[2] = 5;   // Water
+                    physStepAccumulator = 0.0f;
+
+                    ui.stockLimited = true;
+                    ui.stockH = L4_START_H;
+                    ui.stockO = L4_START_O;
+                    ui.spawnCooldownTimer = 0.0f;
+
+                    ui.taskPhase = 1;
+                    ui.taskTextAlpha = 1.0f;
+                    ui.taskPillarsConnected = 0;
+                    ui.taskBridgeHoldTimer = 0.0f;
+                    ui.taskBridgeTimerRunning = false;
+                    ui.nextLevelButtonHovered = false;
+                    ui.copyPendingSpawn = false;
+                    ui.hintButtonOpen = false;
+                }
+                else if (action == 7) {
+                    // Campaign level 6 → Neutron Basketball
+                    state = GameState::Simulation;
+                    ui.campaignMode = true;
+                    ui.campaignLevel = 6;
+
+                    ui.spawnMenuOpen = false;    // ← НОВОЕ: на L6 меню спавна не нужно
+
+                    ui.boxSizeX = L6_BOX_W;
+                    ui.boxSizeY = L6_BOX_H;
+
+                    ui.targetTempCelsius = L6_TEMP_C;
+                    ui.tempSliderDragging = false;
+                    ui.tempEditing = false;
+
+                    ui.gravityEnabled = true;
+                    ui.gravityMagnitude = L6_GRAVITY_MAG;
+                    ui.gravityDirDeg = L6_GRAVITY_DIR_DEG;
+                    ui.gravityDirDragging = false;
+                    ui.gravityMagDragging = false;
+
+                    ui.speedSlider.value = 1.0f;
+                    ui.savedSpeedValue = 1.0f;
+
+                    ui.boxSizeXDragging = false;
+                    ui.boxSizeYDragging = false;
+                    ui.selectedSpawnType = -1;
+                    ui.spawnWaterSelected = false;
+                    ui.waterSpawnRotation = 0.0f;
+                    ui.focusedAtomIndex = -1;
+
+                    atoms.clear();
+                    walls.clear();
+                    neutrons.clear();
+                    gammas.clear();
+                    delayedPool.clear();
+                    ui.pillars.clear();
+                    ui.barriers.clear();
+
+                    // Стартовая площадка
+                    ui.pillars.push_back({ { L6_START_X, L6_START_Y },
+                        L6_PILLAR_HALF_SIZE });
+
+                    // 4 кольца-корзины + борта
+                    for (int i = 0; i < L6_RING_COUNT; ++i) {
+                        sf::Vector2f c{ L6_RING_X[i], L6_RING_Y[i] };
+                        ui.pillars.push_back({ c, L6_PILLAR_HALF_SIZE });
+
+                        // Борта: слева и справа от колонны, чуть выше
+                        // центра — на уровне, где лежит уран.
+                        sf::Vector2f bL = c + sf::Vector2f(
+                            -(L6_PILLAR_HALF_SIZE + L6_BARRIER_HALF_W),
+                            -L6_URANIUM_Y_OFFSET + 0.5f);
+                        sf::Vector2f bR = c + sf::Vector2f(
+                            +(L6_PILLAR_HALF_SIZE + L6_BARRIER_HALF_W),
+                            -L6_URANIUM_Y_OFFSET + 0.5f);
+                        ui.barriers.push_back({ bL,
+                            { L6_BARRIER_HALF_W, L6_BARRIER_HALF_H } });
+                        ui.barriers.push_back({ bR,
+                            { L6_BARRIER_HALF_W, L6_BARRIER_HALF_H } });
+                    }
+
+                    // Активная spawn-зона — на стартовой площадке
+                    ui.activeSpawnZone.pos = { L6_START_X, L6_START_Y - 3.0f };
+                    ui.activeSpawnZone.radius = L6_SPAWN_ZONE_RADIUS;
+                    ui.activeSpawnZone.active = true;
+
+                    ui.batchCounts.assign(ATOM_TYPES.size() + 1, 0);
+                    physStepAccumulator = 0.0f;
+
+                    ui.ringIndex = 0;
+                    ui.ringUraniumTotal = L6_URANIUM_PER_RING;
+                    ui.ringUraniumRemaining = 0;   // заполним ниже
+
+                    ui.taskPhase = 1;
+                    ui.taskTextAlpha = 1.0f;
+                    ui.cameraTransitionActive = false;
+                    ui.phaseDelayTimer = 0.0f;
+                    ui.nextLevelButtonHovered = false;
+                    ui.copyPendingSpawn = false;
+                    ui.hintButtonOpen = false;
+                    ui.stockLimited = false;
+
+                    // Спавним уран на первом кольце
+                    {
+                        int idx = ui.ringIndex;
+                        sf::Vector2f c{ L6_RING_X[idx], L6_RING_Y[idx] };
+                        float baseY = c.y - L6_URANIUM_Y_OFFSET;
+                        float totalW = (L6_URANIUM_PER_RING - 1)
+                            * L6_URANIUM_SPACING;
+                        float x0 = c.x - totalW * 0.5f;
+                        for (int k = 0; k < L6_URANIUM_PER_RING; ++k) {
+                            sf::Vector2f p(x0 + k * L6_URANIUM_SPACING, baseY);
+                            atoms.push_back(makeAtom(3, p, { 0.0f, 0.0f }));
+                            ui.ringUraniumRemaining++;
+                        }
+                    }
+                }
+                // Помечаем, что игрок уже был в симуляции (песочница
+                // или кампания). Тогда при следующем входе в песочницу
+                // покажем диалог выбора карты — независимо от того,
+                // выходил игрок из песочницы или из кампании.
+                if (action == 0 || action == 3 || action == 4
+                    || action == 5 || action == 6 || action == 7)
+                {
+                    ui.sandboxEverEntered = true;
+                }
+
                 // action == 1 → Settings (не используется)
                 continue;
             }
+
+            // ====================================================
+// Диалог выбора карты песочницы: пока он открыт, все
+// события идут только сюда.
+// ====================================================
+            if (ui.sandboxAskDialog) {
+                if (const auto* mb = event->getIf<sf::Event::MouseButtonPressed>()) {
+                    if (mb->button == sf::Mouse::Button::Left) {
+                        sf::Vector2i mp = sf::Mouse::getPosition(window);
+                        sf::Vector2f mpF((float)mp.x, (float)mp.y);
+
+                        float S2 = std::max(1.0f, (float)winSize.y / 1080.0f);
+                        const float bw = 320.0f * S2;
+                        const float bh = 60.0f * S2;
+                        const float gap = 20.0f * S2;
+                        const float cx = (float)winSize.x * 0.5f;
+                        const float btnY = (float)winSize.y * 0.55f;
+
+                        sf::FloatRect defBtn({ cx - bw - gap * 0.5f,
+                                               btnY - bh * 0.5f },
+                            { bw, bh });
+                        sf::FloatRect keepBtn({ cx + gap * 0.5f,
+                                                btnY - bh * 0.5f },
+                            { bw, bh });
+
+                        if (defBtn.contains(mpF)) {
+                            // Стандартная песочница: полный сброс к
+                            // исходному состоянию.
+                            atoms.clear();
+                            walls.clear();
+                            neutrons.clear();
+                            gammas.clear();
+                            delayedPool.clear();
+                            ui.pillars.clear();
+                            atoms.push_back(makeHydrogen({ -2.0f, 0.0f },
+                                { 0.5f, 0.0f }));
+                            atoms.push_back(makeHydrogen({ 2.0f, 0.0f },
+                                { -0.5f, 0.0f }));
+                            ui.boxSizeX = BOX_DEFAULT;
+                            ui.boxSizeY = BOX_DEFAULT;
+                            ui.targetTempCelsius = TEMP_DEFAULT_C;
+                            ui.gravityEnabled = false;
+                            ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                            ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                            ui.speedSlider.value = 1.0f;
+                            ui.savedSpeedValue = 1.0f;
+                            ui.focusedAtomIndex = -1;
+                            ui.stockLimited = false;
+                            ui.stockH = 0;
+                            ui.stockO = 0;
+                            ui.spawnCooldownTimer = 0.0f;
+                            physStepAccumulator = 0.0f;
+                            ui.sandboxAskDialog = false;
+                            ui.sandboxEverEntered = true;
+                        }
+                        else if (keepBtn.contains(mpF)) {
+                            // Оставить прошлую карту — просто закрываем.
+                            ui.sandboxAskDialog = false;
+                            ui.sandboxEverEntered = true;
+                        }
+                    }
+                    continue;
+                }
+                if (const auto* kp = event->getIf<sf::Event::KeyPressed>()) {
+                    if (kp->code == sf::Keyboard::Key::Escape) {
+                        ui.sandboxAskDialog = false;
+                        ui.sandboxEverEntered = true;   // ← добавить
+                        continue;
+                    }
+                }
+                // Все прочие события глушим, пока диалог открыт.
+                continue;
+            }
+
 
             // ====================================================
             // Pause-меню открыто: обрабатываем только его.
@@ -607,7 +954,14 @@ int main() {
 
                     bool ctrlHeld = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LControl) ||
                         sf::Keyboard::isKeyPressed(sf::Keyboard::Key::RControl);
-                    if (ui.copyMode && ctrlHeld && !overTop && !overMenu) {
+                    if (ctrlHeld && !overTop && !overMenu
+                        && ui.spawnWaterSelected)
+                    {
+                        // Поворот превью H2O
+                        float rotStep = (scrolled->delta > 0) ? 15.0f : -15.0f;
+                        ui.waterSpawnRotation += rotStep * 3.14159265f / 180.0f;
+                    }
+                    else if (ui.copyMode && ctrlHeld && !overTop && !overMenu) {
                         float rotStep = (scrolled->delta > 0) ? 15.0f : -15.0f;
                         ui.copyRotation += rotStep * 3.14159265f / 180.0f;
                     }
@@ -664,34 +1018,43 @@ int main() {
                             idx = std::clamp(idx, 0, RMB_ITEMS - 1);
 
                             if (idx == 0) {
-                                // Copy: атомы + стены
-                                sf::Vector2f centroid(0.0f, 0.0f);
-                                int cnt = 0;
-                                for (const auto& a : atoms) if (a.selected) { centroid += a.pos; cnt++; }
-                                for (const auto& w : walls) if (w.selected) {
-                                    centroid += (w.a + w.b) * 0.5f; cnt++;
-                                }
-                                if (cnt > 0) {
-                                    centroid /= (float)cnt;
-                                    ui.copyOffsets.clear();
-                                    ui.copyTemplates.clear();
-                                    ui.copyWallA.clear();
-                                    ui.copyWallB.clear();
-                                    for (const auto& a : atoms) {
-                                        if (!a.selected) continue;
-                                        ui.copyOffsets.push_back(a.pos - centroid);
-                                        ui.copyTemplates.push_back(a);
+                                if (!(ui.campaignMode && ui.campaignLevel == 4)) {
+                                    sf::Vector2f centroid(0.0f, 0.0f);
+                                    int cnt = 0;
+                                    for (const auto& a : atoms) if (a.selected) { centroid += a.pos; cnt++; }
+                                    for (const auto& w : walls) if (w.selected) {
+                                        centroid += (w.a + w.b) * 0.5f; cnt++;
                                     }
-                                    for (const auto& w : walls) {
-                                        if (!w.selected) continue;
-                                        ui.copyWallA.push_back(w.a - centroid);
-                                        ui.copyWallB.push_back(w.b - centroid);
+                                    if (cnt > 0) {
+                                        centroid /= (float)cnt;
+                                        ui.copyOffsets.clear();
+                                        ui.copyTemplates.clear();
+                                        ui.copyWallA.clear();
+                                        ui.copyWallB.clear();
+                                        for (const auto& a : atoms) {
+                                            if (!a.selected) continue;
+                                            ui.copyOffsets.push_back(a.pos - centroid);
+                                            ui.copyTemplates.push_back(a);
+                                        }
+                                        for (const auto& w : walls) {
+                                            if (!w.selected) continue;
+                                            ui.copyWallA.push_back(w.a - centroid);
+                                            ui.copyWallB.push_back(w.b - centroid);
+                                        }
+                                        ui.copyMode = true;
+                                        ui.copyRotation = 0.0f;
                                     }
-                                    ui.copyMode = true;
-                                    ui.copyRotation = 0.0f;
                                 }
                             }
                             else if (idx == 1) {
+                                // L4: возвращаем запас за удаляемые атомы
+                                if (ui.campaignMode && ui.campaignLevel == 4) {
+                                    for (const auto& a : atoms) {
+                                        if (!a.selected) continue;
+                                        if (a.elementId == 0) ui.stockH++;
+                                        else if (a.elementId == 1) ui.stockO++;
+                                    }
+                                }
                                 // Delete: атомы + стены, с корректным ремапом индексов
 
                                 // 1) Строим old→new маппинг
@@ -775,6 +1138,15 @@ int main() {
                                 gammas.clear();
                                 delayedPool.clear();
 
+                                ui.pillars.clear();
+                                ui.barriers.clear();
+                                ui.activeSpawnZone.active = false;
+                                ui.gravityEnabled = false;
+                                ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                                ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                                ui.boxSizeX = BOX_DEFAULT;
+                                ui.boxSizeY = BOX_DEFAULT;
+
                                 ui.batchCounts.assign(ATOM_TYPES.size(), 0);
                                 ui.batchCounts[0] = 10;
                                 ui.batchCounts[1] = 5;
@@ -815,6 +1187,15 @@ int main() {
                                 gammas.clear();
                                 delayedPool.clear();
 
+                                ui.pillars.clear();
+                                ui.barriers.clear();
+                                ui.activeSpawnZone.active = false;
+                                ui.gravityEnabled = false;
+                                ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                                ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                                ui.boxSizeX = BOX_DEFAULT;
+                                ui.boxSizeY = BOX_DEFAULT;
+
                                 ui.batchCounts.assign(ATOM_TYPES.size(), 0);
                                 ui.batchCounts[0] = 10;
                                 ui.batchCounts[1] = 5;
@@ -844,20 +1225,189 @@ int main() {
                                 handled = true;
                             }
                         }
+                        else if (ui.campaignMode && ui.campaignLevel == 4
+                            && ui.taskPhase == 2)
+                        {
+                            sf::FloatRect nr = nextLevelButtonRect(winSize,
+                                L4_TASK_PANEL_H);
+                            if (nr.contains(mpF)) {
+                                // L4 → L6
+                                ui.campaignLevel = 6;
+                                ui.spawnMenuOpen = false;    // ← НОВОЕ
+                                ui.boxSizeX = L6_BOX_W;
+                                ui.boxSizeY = L6_BOX_H;
+
+                                ui.targetTempCelsius = L6_TEMP_C;
+                                ui.tempSliderDragging = false;
+                                ui.tempEditing = false;
+
+                                ui.gravityEnabled = true;
+                                ui.gravityMagnitude = L6_GRAVITY_MAG;
+                                ui.gravityDirDeg = L6_GRAVITY_DIR_DEG;
+                                ui.speedSlider.value = 1.0f;
+                                ui.savedSpeedValue = 1.0f;
+
+                                ui.selectedSpawnType = -1;
+                                ui.spawnWaterSelected = false;
+                                ui.waterSpawnRotation = 0.0f;
+                                ui.focusedAtomIndex = -1;
+
+                                ui.stockLimited = false;
+                                ui.stockH = 0;
+                                ui.stockO = 0;
+                                ui.spawnCooldownTimer = 0.0f;
+
+                                atoms.clear();
+                                walls.clear();
+                                neutrons.clear();
+                                gammas.clear();
+                                delayedPool.clear();
+
+                                ui.pillars.clear();
+                                ui.barriers.clear();
+                                ui.activeSpawnZone.active = false;
+                                ui.gravityEnabled = false;
+                                ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                                ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                                ui.boxSizeX = BOX_DEFAULT;
+                                ui.boxSizeY = BOX_DEFAULT;
+
+                                ui.pillars.push_back({ { L6_START_X, L6_START_Y },
+                                    L6_PILLAR_HALF_SIZE });
+                                for (int i = 0; i < L6_RING_COUNT; ++i) {
+                                    sf::Vector2f c{ L6_RING_X[i], L6_RING_Y[i] };
+                                    ui.pillars.push_back({ c, L6_PILLAR_HALF_SIZE });
+                                    sf::Vector2f bL = c + sf::Vector2f(
+                                        -(L6_PILLAR_HALF_SIZE + L6_BARRIER_HALF_W),
+                                        -L6_URANIUM_Y_OFFSET + 0.5f);
+                                    sf::Vector2f bR = c + sf::Vector2f(
+                                        +(L6_PILLAR_HALF_SIZE + L6_BARRIER_HALF_W),
+                                        -L6_URANIUM_Y_OFFSET + 0.5f);
+                                    ui.barriers.push_back({ bL,
+                                        { L6_BARRIER_HALF_W, L6_BARRIER_HALF_H } });
+                                    ui.barriers.push_back({ bR,
+                                        { L6_BARRIER_HALF_W, L6_BARRIER_HALF_H } });
+                                }
+
+                                ui.activeSpawnZone.pos = { L6_START_X,
+                                    L6_START_Y - 3.0f };
+                                ui.activeSpawnZone.radius = L6_SPAWN_ZONE_RADIUS;
+                                ui.activeSpawnZone.active = true;
+
+                                ui.batchCounts.assign(ATOM_TYPES.size() + 1, 0);
+
+                                ui.ringIndex = 0;
+                                ui.ringUraniumTotal = L6_URANIUM_PER_RING;
+                                ui.ringUraniumRemaining = 0;
+                                {
+                                    sf::Vector2f c{ L6_RING_X[0], L6_RING_Y[0] };
+                                    float baseY = c.y - L6_URANIUM_Y_OFFSET;
+                                    float totalW = (L6_URANIUM_PER_RING - 1)
+                                        * L6_URANIUM_SPACING;
+                                    float x0 = c.x - totalW * 0.5f;
+                                    for (int k = 0; k < L6_URANIUM_PER_RING; ++k) {
+                                        sf::Vector2f p(x0 + k * L6_URANIUM_SPACING,
+                                            baseY);
+                                        atoms.push_back(makeAtom(3, p, { 0.0f, 0.0f }));
+                                        ui.ringUraniumRemaining++;
+                                    }
+                                }
+
+                                ui.taskPhase = 1;
+                                ui.taskTextAlpha = 1.0f;
+                                ui.cameraTransitionActive = false;
+                                ui.phaseDelayTimer = 0.0f;
+                                ui.nextLevelButtonHovered = false;
+                                ui.copyPendingSpawn = false;
+                                ui.hintButtonOpen = false;
+                                handled = true;
+                            }
+                        }
+                        else if (ui.campaignMode && ui.campaignLevel == 6
+                            && ui.taskPhase == L6_RING_COUNT + 1)
+                        {
+                            sf::FloatRect nr = nextLevelButtonRect(winSize,
+                                L6_TASK_PANEL_H);
+                            if (nr.contains(mpF)) {
+                                state = GameState::MainMenu;
+                                ui.pauseMenuOpen = false;
+                                ui.campaignMode = false;
+                                ui.campaignLevel = 0;
+                                ui.pillars.clear();
+                                ui.barriers.clear();
+                                ui.activeSpawnZone.active = false;
+                                mainMenu.init(rng);
+                                handled = true;
+                            }
+                        }
                         else if (ui.campaignMode && ui.campaignLevel == 3
                             && ui.taskPhase == 3)
                         {
                             sf::FloatRect nr = nextLevelButtonRect(winSize, 460.0f);
                             if (nr.contains(mpF)) {
-                                // L3 — финал: возврат в главное меню
-                                state = GameState::MainMenu;
-                                ui.pauseMenuOpen = false;
-                                ui.campaignMode = false;
-                                ui.campaignLevel = 0;
-                                mainMenu.init(rng);
+                                // L3 → L4
+                                ui.campaignLevel = 4;
+                                ui.boxSizeX = L4_BOX_W;
+                                ui.boxSizeY = L4_BOX_H;
+
+                                ui.targetTempCelsius = L4_TEMP_C;
+                                ui.tempSliderDragging = false;
+                                ui.tempEditing = false;
+
+                                ui.gravityEnabled = true;
+                                ui.gravityMagnitude = L4_GRAVITY_MAG;
+                                ui.gravityDirDeg = L4_GRAVITY_DIR_DEG;
+                                ui.speedSlider.value = 1.0f;
+                                ui.savedSpeedValue = 1.0f;
+
+                                ui.selectedSpawnType = -1;
+                                ui.spawnWaterSelected = false;
+                                ui.waterSpawnRotation = 0.0f;
+                                ui.focusedAtomIndex = -1;
+
+                                atoms.clear();
+                                walls.clear();
+                                neutrons.clear();
+                                gammas.clear();
+                                delayedPool.clear();
+                                ui.pillars.clear();
+                                ui.barriers.clear();
+                                ui.activeSpawnZone.active = false;
+                                ui.gravityEnabled = false;
+                                ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
+                                ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
+                                ui.boxSizeX = BOX_DEFAULT;
+                                ui.boxSizeY = BOX_DEFAULT;
+
+                                ui.pillars.push_back({ { -L4_PILLAR_X, 0.0f },
+                                    L4_PILLAR_HALF_SIZE });
+                                ui.pillars.push_back({ {  0.0f,        0.0f },
+                                    L4_PILLAR_HALF_SIZE });
+                                ui.pillars.push_back({ {  L4_PILLAR_X, 0.0f },
+                                    L4_PILLAR_HALF_SIZE });
+
+                                ui.batchCounts.assign(3, 0);
+                                ui.batchCounts[0] = 5;
+                                ui.batchCounts[1] = 5;
+                                ui.batchCounts[2] = 5;
+
+                                ui.stockLimited = true;
+                                ui.stockH = L4_START_H;
+                                ui.stockO = L4_START_O;
+                                ui.spawnCooldownTimer = 0.0f;
+
+                                ui.taskPhase = 1;
+                                ui.taskTextAlpha = 1.0f;
+                                ui.taskPillarsConnected = 0;
+                                ui.taskBridgeHoldTimer = 0.0f;
+                                ui.taskBridgeTimerRunning = false;
+                                ui.nextLevelButtonHovered = false;
+                                ui.copyPendingSpawn = false;
+                                ui.hintButtonOpen = false;
                                 handled = true;
                             }
                         }
+
                     }
 
                     if (!handled) {
@@ -892,75 +1442,78 @@ int main() {
                             handled = true;
                         }
                         if ((float)mp.y < PANEL_HEIGHT) {
-                            // Speed slider
-                            float knobX = SLIDER_LEFT + valueToPos(ui.speedSlider.value) * SLIDER_WIDTH;
-                            float distX = std::abs(mpF.x - knobX);
-                            float distY = std::abs(mpF.y - trackY);
-                            bool overKnob = (distX < SLIDER_KNOB_R + 4.0f) && (distY < SLIDER_KNOB_R + 4.0f);
-                            bool overTrack = (mpF.x >= SLIDER_LEFT - SLIDER_KNOB_R) &&
-                                (mpF.x <= trackRight + SLIDER_KNOB_R) &&
-                                (distY < SLIDER_KNOB_R + 4.0f);
-                            if (overKnob || overTrack) {
-                                ui.speedSlider.isDragging = true;
-                                ui.speedSlider.value = posToValue((mpF.x - SLIDER_LEFT) / SLIDER_WIDTH);
-                                ui.savedSpeedValue = ui.speedSlider.value;
-                            }
-                            float rbX = SLIDER_LEFT + SLIDER_WIDTH + RESET_BTN_GAP;
-                            float rbY = trackY - RESET_BTN_H / 2.0f;
-                            sf::FloatRect rbRect({ rbX, rbY }, { RESET_BTN_W, RESET_BTN_H });
-                            if (rbRect.contains(mpF)) {
-                                ui.speedSlider.value = 1.0f;
-                                ui.savedSpeedValue = 1.0f;
-                                ui.speedSlider.isDragging = false;
-                            }
-
-                            // Temp slider: запрещён в L1 всегда, в L2 — до phase 3
-                            const bool tempDisabledNow =
-                                ui.campaignMode &&
-                                (ui.campaignLevel == 1
-                                    || (ui.campaignLevel == 2 && ui.taskPhase < 3));
-
-                            // Temp slider и всё ниже — только вне кампании
-                            // либо внутри L2 с разблокированной температурой
-                            if (!tempDisabledNow) {
-                                // Temp slider
-                                float tSliderRight = TEMP_SLIDER_LEFT + TEMP_SLIDER_WIDTH;
-                                float tKnobX = TEMP_SLIDER_LEFT + tempCelsiusToSliderPos(ui.targetTempCelsius) * TEMP_SLIDER_WIDTH;
-                                float tDistX = std::abs(mpF.x - tKnobX);
-                                bool tOverKnob = (tDistX < SLIDER_KNOB_R + 4.0f) && (distY < SLIDER_KNOB_R + 4.0f);
-                                bool tOverTrack = (mpF.x >= TEMP_SLIDER_LEFT - SLIDER_KNOB_R) &&
-                                    (mpF.x <= tSliderRight + SLIDER_KNOB_R) &&
+                            const bool l4locked = ui.campaignMode && ui.campaignLevel == 4;
+                            if (!l4locked) {
+                                // Speed slider
+                                float knobX = SLIDER_LEFT + valueToPos(ui.speedSlider.value) * SLIDER_WIDTH;
+                                float distX = std::abs(mpF.x - knobX);
+                                float distY = std::abs(mpF.y - trackY);
+                                bool overKnob = (distX < SLIDER_KNOB_R + 4.0f) && (distY < SLIDER_KNOB_R + 4.0f);
+                                bool overTrack = (mpF.x >= SLIDER_LEFT - SLIDER_KNOB_R) &&
+                                    (mpF.x <= trackRight + SLIDER_KNOB_R) &&
                                     (distY < SLIDER_KNOB_R + 4.0f);
-                                if (tOverKnob || tOverTrack) {
-                                    ui.tempSliderDragging = true;
-                                    ui.targetTempCelsius = tempSliderPosToCelsius((mpF.x - TEMP_SLIDER_LEFT) / TEMP_SLIDER_WIDTH);
+                                if (overKnob || overTrack) {
+                                    ui.speedSlider.isDragging = true;
+                                    ui.speedSlider.value = posToValue((mpF.x - SLIDER_LEFT) / SLIDER_WIDTH);
+                                    ui.savedSpeedValue = ui.speedSlider.value;
+                                }
+                                float rbX = SLIDER_LEFT + SLIDER_WIDTH + RESET_BTN_GAP;
+                                float rbY = trackY - RESET_BTN_H / 2.0f;
+                                sf::FloatRect rbRect({ rbX, rbY }, { RESET_BTN_W, RESET_BTN_H });
+                                if (rbRect.contains(mpF)) {
+                                    ui.speedSlider.value = 1.0f;
+                                    ui.savedSpeedValue = 1.0f;
+                                    ui.speedSlider.isDragging = false;
                                 }
 
-                                sf::FloatRect tFieldRect(
-                                    { TEMP_FIELD_LEFT, trackY - TEMP_FIELD_H / 2.0f },
-                                    { TEMP_FIELD_W, TEMP_FIELD_H });
-                                if (tFieldRect.contains(mpF) && !ui.tempEditing) {
-                                    commitEdit();
-                                    ui.tempEditing = true;
-                                    ui.tempEditBuffer = formatTempCelsius(ui.targetTempCelsius);
-                                    ui.cursorClock.restart();
-                                }
+                                // Temp slider: запрещён в L1 всегда, в L2 — до phase 3
+                                const bool tempDisabledNow =
+                                    ui.campaignMode &&
+                                    (ui.campaignLevel == 1
+                                        || (ui.campaignLevel == 2 && ui.taskPhase < 3));
 
-                                sf::FloatRect tRbRect(
-                                    { TEMP_RESET_LEFT, trackY - TEMP_RESET_H / 2.0f },
-                                    { TEMP_RESET_W, TEMP_RESET_H });
-                                if (tRbRect.contains(mpF)) {
-                                    commitTempEdit();
-                                    ui.targetTempCelsius = TEMP_DEFAULT_C;
-                                    ui.tempSliderDragging = false;
-                                }
+                                // Temp slider и всё ниже — только вне кампании
+                                // либо внутри L2 с разблокированной температурой
+                                if (!tempDisabledNow) {
+                                    // Temp slider
+                                    float tSliderRight = TEMP_SLIDER_LEFT + TEMP_SLIDER_WIDTH;
+                                    float tKnobX = TEMP_SLIDER_LEFT + tempCelsiusToSliderPos(ui.targetTempCelsius) * TEMP_SLIDER_WIDTH;
+                                    float tDistX = std::abs(mpF.x - tKnobX);
+                                    bool tOverKnob = (tDistX < SLIDER_KNOB_R + 4.0f) && (distY < SLIDER_KNOB_R + 4.0f);
+                                    bool tOverTrack = (mpF.x >= TEMP_SLIDER_LEFT - SLIDER_KNOB_R) &&
+                                        (mpF.x <= tSliderRight + SLIDER_KNOB_R) &&
+                                        (distY < SLIDER_KNOB_R + 4.0f);
+                                    if (tOverKnob || tOverTrack) {
+                                        ui.tempSliderDragging = true;
+                                        ui.targetTempCelsius = tempSliderPosToCelsius((mpF.x - TEMP_SLIDER_LEFT) / TEMP_SLIDER_WIDTH);
+                                    }
 
-                                // Кнопка "Charges"
-                                sf::FloatRect chargeBtnRect(
-                                    { CHARGE_BTN_LEFT, trackY - CHARGE_BTN_H / 2.0f },
-                                    { CHARGE_BTN_W, CHARGE_BTN_H });
-                                if (chargeBtnRect.contains(mpF)) {
-                                    ui.showCharges = !ui.showCharges;
+                                    sf::FloatRect tFieldRect(
+                                        { TEMP_FIELD_LEFT, trackY - TEMP_FIELD_H / 2.0f },
+                                        { TEMP_FIELD_W, TEMP_FIELD_H });
+                                    if (tFieldRect.contains(mpF) && !ui.tempEditing) {
+                                        commitEdit();
+                                        ui.tempEditing = true;
+                                        ui.tempEditBuffer = formatTempCelsius(ui.targetTempCelsius);
+                                        ui.cursorClock.restart();
+                                    }
+
+                                    sf::FloatRect tRbRect(
+                                        { TEMP_RESET_LEFT, trackY - TEMP_RESET_H / 2.0f },
+                                        { TEMP_RESET_W, TEMP_RESET_H });
+                                    if (tRbRect.contains(mpF)) {
+                                        commitTempEdit();
+                                        ui.targetTempCelsius = TEMP_DEFAULT_C;
+                                        ui.tempSliderDragging = false;
+                                    }
+
+                                    // Кнопка "Charges"
+                                    sf::FloatRect chargeBtnRect(
+                                        { CHARGE_BTN_LEFT, trackY - CHARGE_BTN_H / 2.0f },
+                                        { CHARGE_BTN_W, CHARGE_BTN_H });
+                                    if (chargeBtnRect.contains(mpF)) {
+                                        ui.showCharges = !ui.showCharges;
+                                    }
                                 }
                             }
                         }
@@ -1050,7 +1603,17 @@ int main() {
                                 }
                                 else if (localX < rSelectW) {
                                     commitEdit();
-                                    ui.selectedSpawnType = (ui.selectedSpawnType == rowIndex) ? -1 : rowIndex;
+                                    const bool waterRow = isWaterRow(
+                                        rowIndex, ui.campaignMode, ui.campaignLevel);
+                                    if (waterRow) {
+                                        ui.spawnWaterSelected = true;
+                                        ui.selectedSpawnType = -1;
+                                    }
+                                    else {
+                                        ui.spawnWaterSelected = false;
+                                        ui.selectedSpawnType =
+                                            (ui.selectedSpawnType == rowIndex) ? -1 : rowIndex;
+                                    }
                                 }
                             }
                             else if (localY >= spawnRowCount * mRowH) {
@@ -1076,17 +1639,206 @@ int main() {
                                     else {
                                         float halfX = ui.boxSizeX * 0.5f;
                                         float halfY = ui.boxSizeY * 0.5f;
-                                        // В кампании batch ограничен доступными элементами
-                                        size_t maxTypes = ATOM_TYPES.size();
+                                        // В кампании batch ограничен доступными
+                                        // элементами. В песочнице — все атомы
+                                        // плюс строка Water.
+                                        size_t maxTypes = ATOM_TYPES.size() + 1;
                                         if (ui.campaignMode && ui.campaignLevel == 1)
                                             maxTypes = 1;
                                         else if (ui.campaignMode && ui.campaignLevel == 2)
                                             maxTypes = 2;
                                         else if (ui.campaignMode && ui.campaignLevel == 3)
                                             maxTypes = 3;
+                                        else if (ui.campaignMode && ui.campaignLevel == 4)
+                                            maxTypes = 3;   // H, O, Water
+                                        else if (ui.campaignMode && ui.campaignLevel == 6)
+                                            maxTypes = 0;   // ← НОВОЕ: L6 без меню
                                         for (size_t ti = 0; ti < maxTypes; ++ti) {
                                             int count = ui.batchCounts[ti];
                                             if (count <= 0) continue;
+
+                                            // ============================================
+                                            // Батч-спавн воды (H2O)
+                                            // ============================================
+                                            // Доступен:
+                                            //   • в песочнице (строка Water)
+                                            //   • на L4 кампании (строка Water)
+                                            // Учитывает:
+                                            //   • запас stockH / stockO на L4
+                                            //   • препятствия-колонны ui.pillars
+                                            //   • уже существующие атомы
+                                            if (isWaterRow((int)ti,
+                                                ui.campaignMode,
+                                                ui.campaignLevel))
+                                            {
+                                                // На L4 ограничиваем запасом
+                                                if (ui.campaignMode
+                                                    && ui.campaignLevel == 4)
+                                                {
+                                                    int canH = ui.stockH / 2;
+                                                    int canO = ui.stockO;
+                                                    count = std::min(count,
+                                                        std::min(canH, canO));
+                                                }
+                                                if (count <= 0) continue;
+
+                                                const float halfAng =
+                                                    WATER_ANGLE_DEG * 0.5f
+                                                    * 3.14159265f / 180.0f;
+                                                const float bLen =
+                                                    getMorsePair(0, 1).re;
+                                                const float oR = ATOM_TYPES[1].radius;
+                                                const float hR = ATOM_TYPES[0].radius;
+                                                const float maxR =
+                                                    bLen + std::max(oR, hR) + 0.05f;
+
+                                                std::uniform_real_distribution<float>
+                                                    distX(-halfX, halfX);
+                                                std::uniform_real_distribution<float>
+                                                    distY(-halfY, halfY);
+                                                std::uniform_real_distribution<float>
+                                                    distRot(0.0f, 6.2831853f);
+
+                                                // Проверка пересечения атома
+                                                // с AABB-колонной.
+                                                auto overlapsPillar =
+                                                    [](sf::Vector2f pos, float r,
+                                                        const Pillar& p)
+                                                    {
+                                                        float cX = std::clamp(
+                                                            pos.x,
+                                                            p.pos.x - p.halfSize,
+                                                            p.pos.x + p.halfSize);
+                                                        float cY = std::clamp(
+                                                            pos.y,
+                                                            p.pos.y - p.halfSize,
+                                                            p.pos.y + p.halfSize);
+                                                        float dx = pos.x - cX;
+                                                        float dy = pos.y - cY;
+                                                        return dx * dx + dy * dy
+                                                            < r * r;
+                                                    };
+
+                                                for (int i = 0; i < count; ++i) {
+                                                    bool placed = false;
+                                                    for (int attempt = 0;
+                                                        attempt < 300 && !placed;
+                                                        ++attempt)
+                                                    {
+                                                        float cx = distX(rng);
+                                                        float cy = distY(rng);
+                                                        cx = std::clamp(cx,
+                                                            -halfX + maxR,
+                                                            halfX - maxR);
+                                                        cy = std::clamp(cy,
+                                                            -halfY + maxR,
+                                                            halfY - maxR);
+
+                                                        float rot = distRot(rng);
+                                                        sf::Vector2f h1Local =
+                                                            rotateVec(
+                                                                { std::cos(halfAng),
+                                                                  std::sin(halfAng) },
+                                                                rot) * bLen;
+                                                        sf::Vector2f h2Local =
+                                                            rotateVec(
+                                                                { std::cos(halfAng),
+                                                                 -std::sin(halfAng) },
+                                                                rot) * bLen;
+                                                        sf::Vector2f h1 = {
+                                                            cx + h1Local.x,
+                                                            cy + h1Local.y
+                                                        };
+                                                        sf::Vector2f h2 = {
+                                                            cx + h2Local.x,
+                                                            cy + h2Local.y
+                                                        };
+
+                                                        bool collides = false;
+
+                                                        // Препятствия (L4).
+                                                        // В песочнице ui.pillars пуст,
+                                                        // поэтому цикл ничего не делает.
+                                                        for (const auto& p
+                                                            : ui.pillars) {
+                                                            if (overlapsPillar(
+                                                                { cx, cy },
+                                                                oR + 0.05f, p)
+                                                                || overlapsPillar(
+                                                                    h1,
+                                                                    hR + 0.05f, p)
+                                                                || overlapsPillar(
+                                                                    h2,
+                                                                    hR + 0.05f, p))
+                                                            {
+                                                                collides = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if (collides) continue;
+
+                                                        // Существующие атомы
+                                                        for (const auto& a
+                                                            : atoms) {
+                                                            float ddx =
+                                                                a.pos.x - cx;
+                                                            float ddy =
+                                                                a.pos.y - cy;
+                                                            float minD =
+                                                                a.radius + oR + 0.05f;
+                                                            if (ddx * ddx + ddy * ddy
+                                                                < minD * minD)
+                                                            {
+                                                                collides = true;
+                                                                break;
+                                                            }
+
+                                                            ddx = a.pos.x - h1.x;
+                                                            ddy = a.pos.y - h1.y;
+                                                            minD =
+                                                                a.radius + hR + 0.05f;
+                                                            if (ddx * ddx + ddy * ddy
+                                                                < minD * minD)
+                                                            {
+                                                                collides = true;
+                                                                break;
+                                                            }
+
+                                                            ddx = a.pos.x - h2.x;
+                                                            ddy = a.pos.y - h2.y;
+                                                            minD =
+                                                                a.radius + hR + 0.05f;
+                                                            if (ddx * ddx + ddy * ddy
+                                                                < minD * minD)
+                                                            {
+                                                                collides = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if (collides) continue;
+
+                                                        // Спавним молекулу
+                                                        int base =
+                                                            (int)atoms.size();
+                                                        auto mol = makeWaterMolecule(
+                                                            base, { cx, cy }, rot,
+                                                            { 0.0f, 0.0f });
+                                                        atoms.push_back(mol[0]);
+                                                        atoms.push_back(mol[1]);
+                                                        atoms.push_back(mol[2]);
+
+                                                        if (ui.campaignMode
+                                                            && ui.campaignLevel == 4)
+                                                        {
+                                                            ui.stockH -= 2;
+                                                            ui.stockO -= 1;
+                                                        }
+                                                        placed = true;
+                                                    }
+                                                    if (!placed) break;
+                                                }
+                                                continue;
+                                            }
 
                                             // Спецслучай: batch-спавн нейтронов
                                             if ((int)ti == (int)ATOM_TYPES.size() - 1) {
@@ -1134,32 +1886,86 @@ int main() {
                                     atoms.clear();
                                     ui.focusedAtomIndex = -1;
                                     physStepAccumulator = 0.0f;
+                                    if (ui.campaignMode && ui.campaignLevel == 4) {
+                                        // Полный перезапуск L4: восстановить запас
+                                        walls.clear();
+                                        neutrons.clear();
+                                        gammas.clear();
+                                        delayedPool.clear();
+                                        ui.stockH = L4_START_H;
+                                        ui.stockO = L4_START_O;
+                                        ui.spawnCooldownTimer = 0.0f;
+                                        ui.batchCounts.assign(3, 0);
+                                        ui.batchCounts[0] = 5;
+                                        ui.batchCounts[1] = 5;
+                                        ui.batchCounts[2] = 5;
+                                        ui.taskPhase = 1;
+                                        ui.taskPillarsConnected = 0;
+                                        ui.taskBridgeHoldTimer = 0.0f;
+                                        ui.taskBridgeTimerRunning = false;
+                                        ui.selectedSpawnType = -1;
+                                        ui.spawnWaterSelected = false;
+                                        ui.waterSpawnRotation = 0.0f;
+                                    }
                                 }
                             }
                         }
-                        else if (ui.selectedSpawnType >= 0) {
+                        else if ((ui.campaignMode && ui.campaignLevel == 6)
+                            && ui.activeSpawnZone.active) {
+                                // L6: спавн разрешён только в активной зоне.
+                                sf::Vector2f worldPos =
+                                    window.mapPixelToCoords(mp, camera);
+                                float ddx = worldPos.x - ui.activeSpawnZone.pos.x;
+                                float ddy = worldPos.y - ui.activeSpawnZone.pos.y;
+                                float r2 = ddx * ddx + ddy * ddy;
+                                float R2 = ui.activeSpawnZone.radius
+                                    * ui.activeSpawnZone.radius;
+                                if (r2 <= R2) {
+                                    ui.spawnDragActive = true;
+                                    ui.spawnDragOrigin = worldPos;
+                                    ui.spawnDragAtomIndices.clear();
+                                    ui.spawnDragNeutronIndices.clear();
+                                    ui.selectedSpawnType =
+                                        (int)ATOM_TYPES.size() - 1;   // нейтрон
+                                }
+                        }
+                        else if (ui.selectedSpawnType >= 0 || ui.spawnWaterSelected) {
                             sf::Vector2f worldPos = window.mapPixelToCoords(mp, camera);
 
-                            // Если выбран "Neutron" — пока НЕ создаём,
-                            // только запоминаем точку старта drag.
-                            if (ui.selectedSpawnType == (int)ATOM_TYPES.size() - 1) {
-                                ui.spawnDragActive = true;
-                                ui.spawnDragOrigin = worldPos;
-                                ui.spawnDragAtomIndices.clear();
-                                ui.spawnDragNeutronIndices.clear();
-                            }
-                            else {
-                                const AtomType& t = ATOM_TYPES[ui.selectedSpawnType];
-                                float halfX = ui.boxSizeX / 2.0f;
-                                float halfY = ui.boxSizeY / 2.0f;
-                                worldPos.x = std::clamp(worldPos.x, -halfX + t.radius, halfX - t.radius);
-                                worldPos.y = std::clamp(worldPos.y, -halfY + t.radius, halfY - t.radius);
+                            // L4: блокируем спавн при активном cooldown
+                            const bool l4Blocked = (ui.campaignMode
+                                && ui.campaignLevel == 4
+                                && ui.spawnCooldownTimer > 0.0f);
 
-                                // Атом: пока НЕ создаём — только запоминаем точку.
-                                ui.spawnDragActive = true;
-                                ui.spawnDragOrigin = worldPos;
-                                ui.spawnDragAtomIndices.clear();
-                                ui.spawnDragNeutronIndices.clear();
+                            if (!l4Blocked) {
+                                if (ui.spawnWaterSelected) {
+                                    // Превью H2O: просто запоминаем точку
+                                    ui.spawnDragActive = true;
+                                    ui.spawnDragOrigin = worldPos;
+                                    ui.spawnDragAtomIndices.clear();
+                                    ui.spawnDragNeutronIndices.clear();
+                                }
+                                else if (ui.selectedSpawnType == (int)ATOM_TYPES.size() - 1) {
+                                    // Нейтрон
+                                    ui.spawnDragActive = true;
+                                    ui.spawnDragOrigin = worldPos;
+                                    ui.spawnDragAtomIndices.clear();
+                                    ui.spawnDragNeutronIndices.clear();
+                                }
+                                else {
+                                    const AtomType& t = ATOM_TYPES[ui.selectedSpawnType];
+                                    float halfX = ui.boxSizeX / 2.0f;
+                                    float halfY = ui.boxSizeY / 2.0f;
+                                    worldPos.x = std::clamp(worldPos.x,
+                                        -halfX + t.radius, halfX - t.radius);
+                                    worldPos.y = std::clamp(worldPos.y,
+                                        -halfY + t.radius, halfY - t.radius);
+
+                                    ui.spawnDragActive = true;
+                                    ui.spawnDragOrigin = worldPos;
+                                    ui.spawnDragAtomIndices.clear();
+                                    ui.spawnDragNeutronIndices.clear();
+                                }
                             }
                         }
                         else {
@@ -1183,6 +1989,7 @@ int main() {
                         && ui.spawnDragNeutronIndices.empty();
 
                     const bool spawnCancel = ui.selectedSpawnType >= 0
+                        || ui.spawnWaterSelected
                         || pendingDragCancel
                         || ui.copyPendingSpawn;
 
@@ -1192,6 +1999,7 @@ int main() {
                         ui.spawnDragNeutronIndices.clear();
                         ui.copyPendingSpawn = false;
                         ui.selectedSpawnType = -1;
+                        ui.spawnWaterSelected = false;
 
                         commitEdit();
                         commitTempEdit();
@@ -1216,6 +2024,7 @@ int main() {
                             ui.editingCountIndex = -1;
                             ui.tempEditing = false;
                             ui.selectedSpawnType = -1;
+                            ui.spawnWaterSelected = false;
                             ui.rmbIsDown = false;
                             ui.rmbWasDragged = false;
                             isPanning = false;
@@ -1253,16 +2062,29 @@ int main() {
                         }
                         sf::Vector2f vel = dirUnit * speed;
 
-                        // Pending-спавн из Spawn Menu либо pending-копия
-                        // через RMB-меню: сущностей ещё нет — создаём их
-                        // прямо сейчас, уже со скоростью.
                         const bool pendingSpawn =
                             ui.spawnDragAtomIndices.empty()
                             && ui.spawnDragNeutronIndices.empty();
 
-                        if (pendingSpawn && ui.copyPendingSpawn) {
-                            // Копирование через ПКМ-меню: создаём атомы
-                            // и стены со скоростью vel.
+                        // --- L4: проверяем запас и cooldown перед фактическим спавном ---
+                        bool l4Ok = true;
+                        bool isWaterSpawn = ui.spawnWaterSelected;
+                        int needH = 0, needO = 0;
+                        if (isWaterSpawn) { needH = 2; needO = 1; }
+                        else if (ui.selectedSpawnType == 0) needH = 1;
+                        else if (ui.selectedSpawnType == 1) needO = 1;
+
+                        if (ui.campaignMode && ui.campaignLevel == 4
+                            && pendingSpawn)
+                        {
+                            if (ui.spawnCooldownTimer > 0.0f) l4Ok = false;
+                            if (ui.stockH < needH || ui.stockO < needO) l4Ok = false;
+                        }
+
+                        if (l4Ok && pendingSpawn && ui.copyPendingSpawn
+                            && !(ui.campaignMode && ui.campaignLevel == 4))
+                        {
+                            // Копирование через ПКМ-меню (только не L4)
                             sf::Vector2f worldPos = ui.spawnDragOrigin;
                             float halfX = ui.boxSizeX / 2.0f;
                             float halfY = ui.boxSizeY / 2.0f;
@@ -1293,7 +2115,37 @@ int main() {
                                 walls.push_back(w);
                             }
                         }
-                        else if (pendingSpawn && ui.selectedSpawnType >= 0) {
+                        else if (l4Ok && pendingSpawn && ui.spawnWaterSelected) {
+                            // Спавн готовой молекулы H2O
+                            float halfX = ui.boxSizeX / 2.0f;
+                            float halfY = ui.boxSizeY / 2.0f;
+
+                            const float halfAng = WATER_ANGLE_DEG * 0.5f
+                                * 3.14159265f / 180.0f;
+                            const float bLen = getMorsePair(0, 1).re;
+                            float maxR = bLen + ATOM_TYPES[1].radius;
+
+                            sf::Vector2f c = ui.spawnDragOrigin;
+                            c.x = std::clamp(c.x, -halfX + maxR, halfX - maxR);
+                            c.y = std::clamp(c.y, -halfY + maxR, halfY - maxR);
+
+                            int base = (int)atoms.size();
+                            auto mol = makeWaterMolecule(base, c,
+                                ui.waterSpawnRotation, vel);
+                            atoms.push_back(mol[0]);
+                            atoms.push_back(mol[1]);
+                            atoms.push_back(mol[2]);
+
+                            if (ui.campaignMode && ui.campaignLevel == 4) {
+                                ui.stockH -= 2;
+                                ui.stockO -= 1;
+                                ui.spawnCooldownTimer = L4_SPAWN_COOLDOWN;
+                                // Обновим счётчик в Spawn Menu (визуально)
+                                if (ui.batchCounts.size() >= 3)
+                                    ui.batchCounts[2] = std::max(0, ui.batchCounts[2] - 1);
+                            }
+                        }
+                        else if (l4Ok && pendingSpawn && ui.selectedSpawnType >= 0) {
                             // Обычный spawn из Spawn Menu.
                             if (ui.selectedSpawnType == (int)ATOM_TYPES.size() - 1) {
                                 Neutron n;
@@ -1301,6 +2153,8 @@ int main() {
                                 if (speed > 0.0f) {
                                     n.dir = dirUnit;
                                     float sp = std::min(speed, 20.0f);
+                                    if (ui.campaignMode && ui.campaignLevel == 6)
+                                        sp *= L6_SPAWN_SPEED_MUL;
                                     if (sp < 0.1f) sp = 0.1f;
                                     n.energy_eV = 0.0253f * (sp / 5.0f) * (sp / 5.0f);
                                 }
@@ -1317,10 +2171,19 @@ int main() {
                             else {
                                 atoms.push_back(makeAtom(ui.selectedSpawnType,
                                     ui.spawnDragOrigin, vel));
+
+                                if (ui.campaignMode && ui.campaignLevel == 4) {
+                                    if (ui.selectedSpawnType == 0) ui.stockH -= 1;
+                                    else if (ui.selectedSpawnType == 1) ui.stockO -= 1;
+                                    ui.spawnCooldownTimer = L4_SPAWN_COOLDOWN;
+                                    if ((int)ui.batchCounts.size() > ui.selectedSpawnType)
+                                        ui.batchCounts[ui.selectedSpawnType] =
+                                        std::max(0, ui.batchCounts[ui.selectedSpawnType] - 1);
+                                }
                             }
                         }
-                        else {
-                            // Drag по уже созданным сущностям (не pending).
+                        else if (l4Ok) {
+                            // Drag по уже созданным сущностям
                             for (int idx : ui.spawnDragAtomIndices) {
                                 if (idx >= 0 && idx < (int)atoms.size())
                                     atoms[idx].vel = vel;
@@ -1355,7 +2218,14 @@ int main() {
                         }
                     }
                     if (ui.lmbIsDown) {
-                        if (!ui.lmbIsDragging) {
+                        // На L6 клик по урану НЕ должен его фокусировать:
+                        // камера мгновенно «улетает» на мишень и целиться
+                        // по кольцам становится невозможно. Уран здесь —
+                        // просто цель, манипулировать им не нужно.
+                        const bool l6NoSelect =
+                            ui.campaignMode && ui.campaignLevel == 6;
+
+                        if (!ui.lmbIsDragging && !l6NoSelect) {
                             sf::Vector2f worldPos = window.mapPixelToCoords(ui.lmbDownPixel, camera);
 
                             // Сначала ищем атом
@@ -1503,16 +2373,25 @@ int main() {
                         ui.showCharges = !ui.showCharges;
                     }
                     if (keyPressed->code == sf::Keyboard::Key::Space) {
-                        if (ui.speedSlider.value > 0.0f) {
-                            ui.savedSpeedValue = ui.speedSlider.value;
-                            ui.speedSlider.value = 0.0f;
-                        }
-                        else {
-                            ui.speedSlider.value = (ui.savedSpeedValue > 0.0f) ? ui.savedSpeedValue : 1.0f;
+                        // На L4 пауза пробелом отключена — иначе можно
+                        // расставить молекулы «на паузе» и выиграть.
+                        const bool spacePauseBlocked =
+                            ui.campaignMode && ui.campaignLevel == 4;
+                        if (!spacePauseBlocked) {
+                            if (ui.speedSlider.value > 0.0f) {
+                                ui.savedSpeedValue = ui.speedSlider.value;
+                                ui.speedSlider.value = 0.0f;
+                            }
+                            else {
+                                ui.speedSlider.value = (ui.savedSpeedValue > 0.0f) ? ui.savedSpeedValue : 1.0f;
+                            }
                         }
                     }
                     if (keyPressed->code == sf::Keyboard::Key::Tab) {
-                        ui.spawnMenuOpen = !ui.spawnMenuOpen;
+                        // На L6 меню спавна отключено — спавн только drag'ом
+                        // в активной зоне.
+                        bool l6 = ui.campaignMode && ui.campaignLevel == 6;
+                        if (!l6) ui.spawnMenuOpen = !ui.spawnMenuOpen;
                     }
                     if (keyPressed->code == sf::Keyboard::Key::Escape) {
                         if (ui.isDrawingWall) {
@@ -1528,6 +2407,7 @@ int main() {
                         else if (ui.rmbMenuOpen) ui.rmbMenuOpen = false;
                         else if (ui.selectedSpawnType >= 0) {
                             ui.selectedSpawnType = -1;
+                            ui.spawnWaterSelected = false;
                         }
                         else {
                             // Ничего не открыто — открываем pause-меню.
@@ -1536,6 +2416,17 @@ int main() {
                             for (auto& a : atoms) a.selected = false;
                             for (auto& w : walls) w.selected = false;
                             ui.pauseMenuOpen = true;
+
+                            // Сброс «водного» превью — иначе можно на паузе
+                            // (перед паузой) подготовить спавн H2O и получить
+                            // преимущество. Также полностью очищаем pending-drag.
+                            ui.spawnWaterSelected = false;
+                            ui.waterSpawnRotation = 0.0f;
+                            ui.selectedSpawnType = -1;
+                            ui.spawnDragActive = false;
+                            ui.spawnDragAtomIndices.clear();
+                            ui.spawnDragNeutronIndices.clear();
+                            ui.copyPendingSpawn = false;
                         }
                     }
                 }
@@ -1626,7 +2517,13 @@ int main() {
             camera.move({ delta.x * wppX, delta.y * wppY });
         }
 
-        if (ui.focusedAtomIndex >= 0 && ui.focusedAtomIndex < (int)atoms.size()) {
+        // На L6 камера управляется скриптом перелёта между кольцами;
+        // фокус на уране только мешает.
+        const bool l6CamLock =
+            ui.campaignMode && ui.campaignLevel == 6;
+        if (!l6CamLock
+            && ui.focusedAtomIndex >= 0
+            && ui.focusedAtomIndex < (int)atoms.size()) {
             sf::Vector2f target = atoms[ui.focusedAtomIndex].pos;
             sf::Vector2f current = camera.getCenter();
             float k = 0.15f;
@@ -1795,6 +2692,213 @@ int main() {
             }
         }
 
+        // ============================================================
+        // Прогресс уровня 4 (Молекулярный мост)
+        // ============================================================
+        if (ui.campaignMode && ui.campaignLevel == 4) {
+            // Cooldown
+            if (ui.spawnCooldownTimer > 0.0f) {
+                ui.spawnCooldownTimer -= dt;
+                if (ui.spawnCooldownTimer < 0.0f) ui.spawnCooldownTimer = 0.0f;
+            }
+
+            // --- Построение графа воды по H-связям ---
+            const int n = (int)atoms.size();
+
+            std::vector<int> atomToWater(n, -1);
+            std::vector<int> waterO;   // индексы O-атомов воды
+            for (int i = 0; i < n; ++i) {
+                if (atoms[i].elementId != 1) continue;
+                int hCount = 0;
+                bool hasO = false;
+                for (int k : atoms[i].bonds) {
+                    if (k < 0) continue;
+                    if (atoms[k].elementId == 0) hCount++;
+                    else if (atoms[k].elementId == 1) hasO = true;
+                }
+                if (hCount == 2 && !hasO) {
+                    atomToWater[i] = (int)waterO.size();
+                    waterO.push_back(i);
+                    for (int k : atoms[i].bonds) {
+                        if (k >= 0 && atoms[k].elementId == 0) {
+                            atomToWater[k] = atomToWater[i];
+                        }
+                    }
+                }
+            }
+            const int m = (int)waterO.size();
+
+            // Union-Find по H-связям
+            std::vector<int> parent(m);
+            for (int i = 0; i < m; ++i) parent[i] = i;
+            auto findRoot = [&](int x) {
+                while (parent[x] != x) {
+                    parent[x] = parent[parent[x]];
+                    x = parent[x];
+                }
+                return x;
+                };
+            auto unite = [&](int a, int b) {
+                a = findRoot(a); b = findRoot(b);
+                if (a != b) parent[a] = b;
+                };
+
+            for (int i = 0; i < n; ++i) {
+                int wi = atomToWater[i];
+                if (wi < 0) continue;
+                for (int j : atoms[i].hbonds) {
+                    if (j < 0 || j >= n) continue;
+                    int wj = atomToWater[j];
+                    if (wj < 0 || wj == wi) continue;
+                    unite(wi, wj);
+                }
+            }
+
+            // Какая компонента касается каких колонн
+            std::vector<int> compPillars(m, 0);  // bitmask
+            for (int w = 0; w < m; ++w) {
+                int oIdx = waterO[w];
+                int root = findRoot(w);
+                for (size_t p = 0; p < ui.pillars.size() && p < 3; ++p) {
+                    float dx = atoms[oIdx].pos.x - ui.pillars[p].pos.x;
+                    float dy = atoms[oIdx].pos.y - ui.pillars[p].pos.y;
+                    float ext = ui.pillars[p].halfSize + L4_PILLAR_TOUCH_DIST;
+                    if (std::abs(dx) <= ext && std::abs(dy) <= ext) {
+                        compPillars[root] |= (1 << p);
+                    }
+                }
+            }
+
+            // Максимум соединённых колонн в одной компоненте
+            int best = 0;
+            for (int w = 0; w < m; ++w) {
+                if (findRoot(w) != w) continue;
+                int mask = compPillars[w];
+                int cnt = 0;
+                for (int p = 0; p < 3; ++p) if (mask & (1 << p)) cnt++;
+                if (cnt > best) best = cnt;
+            }
+            ui.taskPillarsConnected = best;
+
+            // Таймер удержания
+            if (best >= 3 && ui.taskPhase == 1) {
+                ui.taskBridgeHoldTimer += dt;
+                ui.taskBridgeTimerRunning = true;
+                if (ui.taskBridgeHoldTimer >= L4_BRIDGE_HOLD_TIME) {
+                    ui.taskPhase = 2;
+                    ui.taskTextAlpha = 0.0f;
+                }
+            }
+            else if (ui.taskPhase == 1) {
+                ui.taskBridgeHoldTimer = 0.0f;
+                ui.taskBridgeTimerRunning = false;
+            }
+
+            if (ui.taskTextAlpha < 1.0f) {
+                ui.taskTextAlpha = std::min(1.0f, ui.taskTextAlpha + dt * 3.0f);
+            }
+
+            ui.nextLevelButtonHovered = false;
+            if (ui.taskPhase == 2) {
+                sf::FloatRect nr = nextLevelButtonRect(winSize, L4_TASK_PANEL_H);
+                ui.nextLevelButtonHovered = nr.contains(
+                    { (float)mp.x, (float)mp.y });
+            }
+        }
+
+        // ============================================================
+// Прогресс уровня 6 (Взрывные кольца)
+// ============================================================
+        if (ui.campaignMode && ui.campaignLevel == 6) {
+            // Считаем живой уран
+            int aliveU = 0;
+            for (const auto& a : atoms) if (a.elementId == 3) aliveU++;
+            ui.ringUraniumRemaining = aliveU;
+
+            // Спавн блокируем, если идёт пауза между фазами
+            if (ui.phaseDelayTimer > 0.0f) {
+                ui.phaseDelayTimer -= dt;
+            }
+
+            // Детонация текущего кольца
+            if (ui.taskPhase >= 1 && ui.taskPhase <= L6_RING_COUNT
+                && ui.ringUraniumRemaining == 0
+                && ui.phaseDelayTimer <= 0.0f)
+            {
+                ui.phaseDelayTimer = L6_PHASE_DELAY;
+                ui.ringIndex++;
+
+                if (ui.ringIndex < L6_RING_COUNT) {
+                    // Очищаем все «старые» нейтроны и гаммы, оставшиеся
+                    // от предыдущего кольца. Иначе они долетают до свежего
+                    // урана и мгновенно детонируют его — уровень сам
+                    // «перескакивает» через кольца.
+                    neutrons.clear();
+                    gammas.clear();
+
+                    // Спавн урана на следующем кольце
+                    int idx = ui.ringIndex;
+                    sf::Vector2f c{ L6_RING_X[idx], L6_RING_Y[idx] };
+                    float baseY = c.y - L6_URANIUM_Y_OFFSET;
+                    float totalW = (L6_URANIUM_PER_RING - 1)
+                        * L6_URANIUM_SPACING;
+                    float x0 = c.x - totalW * 0.5f;
+                    for (int k = 0; k < L6_URANIUM_PER_RING; ++k) {
+                        sf::Vector2f p(x0 + k * L6_URANIUM_SPACING, baseY);
+                        atoms.push_back(makeAtom(3, p, { 0.0f, 0.0f }));
+                    }
+                    ui.ringUraniumRemaining = L6_URANIUM_PER_RING;
+
+                    // Перенос spawn-зоны
+                    // Сдвигаем зону влево от кольца, чтобы не спавнить
+                    // нейтроны прямо внутри урана (иначе мгновенная детонация).
+                    ui.activeSpawnZone.pos = { c.x - (L6_PILLAR_HALF_SIZE
+                        + L6_SPAWN_ZONE_RADIUS + 3.0f), c.y };
+                    ui.activeSpawnZone.active = true;
+
+                    // Перелёт камеры
+                    ui.cameraTransitionActive = true;
+                    ui.cameraTransitionTarget = c;
+
+                    ui.taskPhase++;
+                    ui.taskTextAlpha = 0.0f;
+                }
+                else {
+                    // Все кольца пройдены
+                    ui.taskPhase = L6_RING_COUNT + 1;
+                    ui.taskTextAlpha = 0.0f;
+                    ui.activeSpawnZone.active = false;
+                }
+            }
+
+            // Перелёт камеры
+            if (ui.cameraTransitionActive) {
+                sf::Vector2f cur = camera.getCenter();
+                sf::Vector2f tgt = ui.cameraTransitionTarget;
+                sf::Vector2f delta = tgt - cur;
+                float len2 = delta.x * delta.x + delta.y * delta.y;
+                if (len2 < 0.5f) {
+                    camera.setCenter(tgt);
+                    ui.cameraTransitionActive = false;
+                }
+                else {
+                    camera.setCenter(cur + delta * 0.08f);
+                }
+            }
+
+            if (ui.taskTextAlpha < 1.0f) {
+                ui.taskTextAlpha = std::min(1.0f,
+                    ui.taskTextAlpha + dt * 3.0f);
+            }
+
+            ui.nextLevelButtonHovered = false;
+            if (ui.taskPhase == L6_RING_COUNT + 1) {
+                sf::FloatRect nr = nextLevelButtonRect(winSize, L6_TASK_PANEL_H);
+                ui.nextLevelButtonHovered = nr.contains(
+                    { (float)mp.x, (float)mp.y });
+            }
+        }
+
         // В главном меню: работаем только с демо, основная
         // симуляция НЕ считается (экономия CPU и корректность).
         if (state == GameState::MainMenu) {
@@ -1811,7 +2915,9 @@ int main() {
         // Пауза: скорость = 0, пока открыто Esc-меню.
         // Настройка ui.speedSlider.value сохраняется — при закрытии
         // меню симуляция продолжит идти с той же скоростью.
-        float timeScale = ui.pauseMenuOpen ? 0.0f : ui.speedSlider.value;
+        float timeScale =
+            (ui.pauseMenuOpen || ui.sandboxAskDialog) ? 0.0f
+            : ui.speedSlider.value;
         float stepsNeeded = SUBSTEPS * timeScale;
         physStepAccumulator += stepsNeeded;
         int stepsThisFrame = static_cast<int>(physStepAccumulator);
@@ -1896,6 +3002,8 @@ int main() {
                 atoms[i].age += PHYS_DT * 0.1f;
             }
             applyWallsToAtoms(atoms, walls);
+            applyPillarsToAtoms(atoms, ui.pillars);
+            applyBarriersToAtoms(atoms, ui.barriers);   // ← НОВОЕ: держит уран в корзине
             float halfX = ui.boxSizeX * 0.5f;
             float halfY = ui.boxSizeY * 0.5f;
             for (auto& a : atoms) {
@@ -1905,9 +3013,27 @@ int main() {
                 if (a.pos.y > halfY - a.radius) { a.pos.y = halfY - a.radius; a.vel.y = -a.vel.y * BOUNDARY_REST; }
             }
             // --- Нейтронный транспорт ---
+            NeutronStepConfig nsCfg;
+            if (ui.campaignMode && ui.campaignLevel == 6) {
+                nsCfg.neutronGravity = true;
+                nsCfg.gravityDirDeg = ui.gravityDirDeg;
+                // ← НОВОЕ: нейтроны падают в 3 раза слабее атомов,
+                // чтобы можно было добросить до дальних колец.
+                nsCfg.gravityMag = ui.gravityMagnitude * GRAVITY_ACCEL_SCALE
+                    * L6_NEUTRON_GRAVITY_MUL;
+                nsCfg.dragScale = L6_NEUTRON_DRAG_SCALE;
+                nsCfg.bouncePillars = true;
+                nsCfg.pillarRestitution = L6_PILLAR_RESTITUTION;
+                nsCfg.pillars = &ui.pillars;
+                nsCfg.skipFissionFragments = true;
+                nsCfg.recordTrail = true;
+                nsCfg.barriers = &ui.barriers;
+                nsCfg.minSpeed = L6_NEUTRON_MIN_SPEED;
+            }
+
             stepNeutrons(neutrons, gammas, atoms, delayedPool, grid,
                 sf::Vector2f{ ui.boxSizeX, ui.boxSizeY },
-                PHYS_DT, rng);
+                PHYS_DT, rng, nsCfg);
             updateDelayedNeutrons(neutrons, delayedPool, PHYS_DT, rng);
             stepGammas(gammas, sf::Vector2f{ ui.boxSizeX, ui.boxSizeY }, PHYS_DT);
         }
@@ -1949,6 +3075,5 @@ int main() {
 
         window.display();
     }
-
     return 0;
 }

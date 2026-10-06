@@ -64,6 +64,59 @@ inline int poissonSample(float lambda, std::mt19937& rng) {
     return k - 1;
 }
 
+// Отскок нейтрона от AABB-колонны. Возвращает true, если было
+// столкновение (и позиция/направление скорректированы).
+inline bool bounceNeutronFromAABB(Neutron& n,
+    const sf::Vector2f& center,
+    float halfSize,
+    float restitution)
+{
+    const float cX = std::clamp(n.pos.x, center.x - halfSize, center.x + halfSize);
+    const float cY = std::clamp(n.pos.y, center.y - halfSize, center.y + halfSize);
+    const float dx = n.pos.x - cX;
+    const float dy = n.pos.y - cY;
+    const float d2 = dx * dx + dy * dy;
+    const float R = 0.05f;   // «радиус» нейтрона (маленький)
+    if (d2 >= R * R) return false;
+
+    float nx, ny;
+    if (d2 > 1e-8f) {
+        float d = std::sqrt(d2);
+        nx = dx / d; ny = dy / d;
+        float overlap = R - d;
+        n.pos.x += nx * overlap;
+        n.pos.y += ny * overlap;
+    }
+    else {
+        // центр нейтрона внутри AABB — выталкиваем через ближайшую грань
+        float left = n.pos.x - (center.x - halfSize);
+        float right = (center.x + halfSize) - n.pos.x;
+        float top = n.pos.y - (center.y - halfSize);
+        float bottom = (center.y + halfSize) - n.pos.y;
+        float mn = left; int face = 0;
+        if (right < mn) { mn = right;  face = 1; }
+        if (top < mn) { mn = top;    face = 2; }
+        if (bottom < mn) { mn = bottom; face = 3; }
+        switch (face) {
+        case 0: n.pos.x = center.x - halfSize - R; nx = -1.0f; ny = 0.0f; break;
+        case 1: n.pos.x = center.x + halfSize + R; nx = 1.0f; ny = 0.0f; break;
+        case 2: n.pos.y = center.y - halfSize - R; nx = 0.0f; ny = -1.0f; break;
+        case 3: n.pos.y = center.y + halfSize + R; nx = 0.0f; ny = 1.0f; break;
+        default: nx = 0.0f; ny = 0.0f; break;
+        }
+    }
+
+    float vn = n.dir.x * nx + n.dir.y * ny;
+    if (vn < 0.0f) {
+        n.dir.x -= (1.0f + restitution) * vn * nx;
+        n.dir.y -= (1.0f + restitution) * vn * ny;
+        // нормализуем (на всякий)
+        float L = std::sqrt(n.dir.x * n.dir.x + n.dir.y * n.dir.y);
+        if (L > 1e-6f) n.dir /= L;
+    }
+    return true;
+}
+
 // ============================================================
 // SECTION 2. Сечения
 // ============================================================
@@ -284,10 +337,30 @@ void handleFission(int hitIdx, const Neutron& n,
     std::vector<Neutron>& newNeutrons,
     std::vector<Gamma>& gammas,
     std::vector<Neutron>& delayedPool,
-    std::mt19937& rng)
+    std::mt19937& rng,
+    bool skipFragments = false)
 {
     // Запоминаем позицию заранее — vector может реаллоцироваться
     const sf::Vector2f uPos = atoms[hitIdx].pos;
+
+    if (skipFragments) {
+        // L6: осколки не нужны — просто считаем, что они улетели.
+        int np0 = sampleNeutronMultiplicity(n.energy_eV, rng);
+        for (int k = 0; k < np0; ++k) {
+            Neutron nn;
+            nn.pos = uPos;
+            nn.dir = randomUnitVector2D(rng);
+            nn.energy_eV = sampleWattSpectrum(rng);
+            nn.age = 0.0f;
+            nn.alive = true;
+            nn.parentU = -1;
+            nn.delayed = false;
+            newNeutrons.push_back(nn);
+        }
+        spawnGammaCascade(uPos, gammas, rng);
+        atoms[hitIdx].elementId = -1;
+        return;
+    }
 
     // 1) Массы осколков
     int A1 = sampleYield(rng);
@@ -420,7 +493,8 @@ void stepNeutrons(
     const SpatialGrid& grid,
     sf::Vector2f boxSize,
     float dt,
-    std::mt19937& rng)
+    std::mt19937& rng,
+    const NeutronStepConfig& cfg)
 {
     const float halfX = boxSize.x * 0.5f;
     const float halfY = boxSize.y * 0.5f;
@@ -428,16 +502,46 @@ void stepNeutrons(
     std::vector<Neutron> newNeutrons;
     newNeutrons.reserve(8);
 
+    // Вектор гравитации (для L6)
+    sf::Vector2f grav(0.0f, 0.0f);
+    if (cfg.neutronGravity && cfg.gravityMag > 0.0f) {
+        float rad = cfg.gravityDirDeg * 3.14159265f / 180.0f;
+        grav = { std::cos(rad) * cfg.gravityMag,
+                 std::sin(rad) * cfg.gravityMag };
+    }
+
     for (size_t ni = 0; ni < neutrons.size(); ++ni) {
         Neutron& n = neutrons[ni];
         if (!n.alive) continue;
 
         float speed = neutronSpeed(n.energy_eV);
+        if (cfg.minSpeed > 0.0f && speed < cfg.minSpeed) {
+            n.alive = false;
+            continue;
+        }
+
+        // Гравитация: переводим в скорость, прибавляем g*dt, обратно.
+        if (cfg.neutronGravity) {
+            sf::Vector2f vel = n.dir * speed;
+            vel += grav * dt * 60.0f;   // *60 — чтобы g=0.8 давал заметную дугу
+            float newSpeed = std::sqrt(vel.x * vel.x + vel.y * vel.y);
+            if (newSpeed > 1e-6f) {
+                n.dir = vel / newSpeed;
+                // обратно в энергию: E ∝ v²
+                n.energy_eV = 0.0253f * (newSpeed / 5.0f) * (newSpeed / 5.0f);
+            }
+            speed = newSpeed;
+        }
+
+        // Трение
+        if (cfg.dragScale < 1.0f) {
+            speed *= (1.0f - (1.0f - cfg.dragScale) * 0.4f * dt);
+            n.energy_eV = 0.0253f * (speed / 5.0f) * (speed / 5.0f);
+        }
+
         float move = speed * dt;
 
-        // Разбиваем движение на подшаги, чтобы нейтрон не «проскакивал»
-        // мимо ядер с малым радиусом взаимодействия.
-        const float MAX_CHUNK = 0.3f;   // Å на подшаг
+        const float MAX_CHUNK = 0.3f;
         int nChunks = std::max(1, (int)std::ceil(move / MAX_CHUNK));
         nChunks = std::min(nChunks, 200);
         float chunkSize = move / (float)nChunks;
@@ -445,10 +549,55 @@ void stepNeutrons(
         for (int c = 0; c < nChunks && n.alive; ++c) {
             n.pos += n.dir * chunkSize;
 
-            // Границы коробки
+            // Границы коробки — нейтрон умирает
             if (std::abs(n.pos.x) > halfX || std::abs(n.pos.y) > halfY) {
                 n.alive = false;
                 break;
+            }
+
+            // Отскок от колонн (L6)
+            if (cfg.bouncePillars && cfg.pillars) {
+                for (const auto& p : *cfg.pillars) {
+                    bounceNeutronFromAABB(n, p.pos, p.halfSize,
+                        cfg.pillarRestitution);
+                }
+                if (cfg.barriers) {
+                    for (const auto& b : *cfg.barriers) {
+                        // Борт — тонкая AABB. halfSize не одинаковый по X и Y,
+                        // поэтому вызываем упрощённый bounce.
+                        float cX = std::clamp(n.pos.x,
+                            b.pos.x - b.halfSize.x, b.pos.x + b.halfSize.x);
+                        float cY = std::clamp(n.pos.y,
+                            b.pos.y - b.halfSize.y, b.pos.y + b.halfSize.y);
+                        float ddx = n.pos.x - cX;
+                        float ddy = n.pos.y - cY;
+                        float d2 = ddx * ddx + ddy * ddy;
+                        const float R = 0.05f;
+                        if (d2 >= R * R) continue;
+                        float nx, ny;
+                        if (d2 > 1e-8f) {
+                            float d = std::sqrt(d2);
+                            nx = ddx / d; ny = ddy / d;
+                            float overlap = R - d;
+                            n.pos.x += nx * overlap;
+                            n.pos.y += ny * overlap;
+                        }
+                        else {
+                            // центр внутри — выталкиваем по X
+                            nx = (n.pos.x < b.pos.x) ? -1.0f : 1.0f;
+                            ny = 0.0f;
+                            n.pos.x = b.pos.x + nx * (b.halfSize.x + R);
+                        }
+                        float vn = n.dir.x * nx + n.dir.y * ny;
+                        if (vn < 0.0f) {
+                            n.dir.x -= (1.0f + cfg.pillarRestitution) * vn * nx;
+                            n.dir.y -= (1.0f + cfg.pillarRestitution) * vn * ny;
+                            float L = std::sqrt(n.dir.x * n.dir.x
+                                + n.dir.y * n.dir.y);
+                            if (L > 1e-6f) n.dir /= L;
+                        }
+                    }
+                }
             }
 
             // Ищем ядра в 3×3
@@ -465,10 +614,6 @@ void stepNeutrons(
                         if (idx < 0 || idx >= (int)atoms.size()) continue;
                         const Atom& a = atoms[idx];
                         if (a.elementId < 0) continue;
-
-                        // Осколки деления не участвуют в нейтронном транспорте.
-                        // Реальные U-235 имеют elementId == 3; осколки — elementId 1 или 2
-                        // с большой массой (A > 60). Пропускаем их.
                         if (a.elementId != 3 && a.mass > 60.0f) continue;
 
                         float ddx = a.pos.x - n.pos.x;
@@ -478,8 +623,6 @@ void stepNeutrons(
                         float R_int = interactionRadius(a.elementId, n.energy_eV);
                         if (r2 > R_int * R_int) continue;
 
-                        // === ВЗАИМОДЕЙСТВИЕ ===
-                        // Сечения
                         float sigma_f = (a.elementId == 3)
                             ? totalFissionSigma(n.energy_eV) : 0.0f;
                         float sigma_c = (a.elementId == 3)
@@ -497,40 +640,52 @@ void stepNeutrons(
 
                         float r = uniform01(rng) * sigma_t;
                         if (r < sigma_f) {
-                            // Деление
                             handleFission(idx, n, atoms, newNeutrons,
-                                gammas, delayedPool, rng);
+                                gammas, delayedPool, rng,
+                                cfg.skipFissionFragments);
                             n.alive = false;
                         }
                         else if (r < sigma_f + sigma_c) {
-                            // Радиационный захват
                             spawnGammaCascade(a.pos, gammas, rng);
                             n.alive = false;
                         }
                         else {
-                            // Упругое рассеяние
                             scatterNeutron(n, a, rng);
-                            // Продолжаем движение в новом направлении
                         }
-                        break;   // одно взаимодействие на chunk
+                        break;
                     }
                 }
             }
         }
 
-        if (n.alive) n.age += dt;
+        if (n.alive) {
+            n.age += dt;
+
+            // Запись следа (L6)
+            if (cfg.recordTrail) {
+                n.trailTimer += dt;
+                if (n.trailTimer >= L6_NEUTRON_TRAIL_STEP) {
+                    n.trailTimer = 0.0f;
+                    n.trail.push_back(n.pos);
+                    // Обрезаем хвост
+                    const size_t maxPts =
+                        (size_t)(L6_NEUTRON_TRAIL_MAX / L6_NEUTRON_TRAIL_STEP);
+                    if (n.trail.size() > maxPts) {
+                        n.trail.erase(n.trail.begin(),
+                            n.trail.begin() + (n.trail.size() - maxPts));
+                    }
+                }
+            }
+        }
     }
 
-    // Добавляем новые нейтроны от делений
     for (auto& nn : newNeutrons) neutrons.push_back(nn);
 
-    // Чистим мёртвые нейтроны
     neutrons.erase(
         std::remove_if(neutrons.begin(), neutrons.end(),
             [](const Neutron& n) { return !n.alive; }),
         neutrons.end());
 
-    // Чистим помеченные к удалению U-235
     compactAtomsAfterFission(atoms);
 }
 

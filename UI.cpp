@@ -143,7 +143,18 @@ namespace {
         case 6: return tr(Loc::AtomKrypton, lang);
         case 7: return tr(Loc::AtomNeutron, lang);
         }
-        return sf::String(ATOM_TYPES[id].name);
+        // FIX: страховка от выхода за границы ATOM_TYPES
+        if (id >= 0 && id < (int)ATOM_TYPES.size())
+            return sf::String(ATOM_TYPES[id].name);
+        return sf::String("?");
+    }
+    // Строка Spawn Menu → sf::String имени (для воды — отдельная Loc-строка)
+    inline sf::String rowDisplayName(int row, bool campaignMode,
+        int campaignLevel, Language lang)
+    {
+        if (isWaterRow(row, campaignMode, campaignLevel))
+            return tr(Loc::AtomWater, lang);
+        return locAtomName(row, lang);
     }
 } // namespace
 
@@ -240,6 +251,7 @@ void drawEverything(sf::RenderTarget& target,
         target.setView(camera);
         target.clear(sf::Color(10, 10, 10));
 
+        // Сначала рисуем коробку и сетку, чтобы колонны были поверх.
         {
             sf::RectangleShape boxShape(boxSize);
             boxShape.setOrigin({ boxSize.x / 2.0f, boxSize.y / 2.0f });
@@ -254,6 +266,56 @@ void drawEverything(sf::RenderTarget& target,
             drawGridLayer(target, camera, gridSpacing, gridBaseColor, gridAlpha);
 
             target.draw(boxShape);
+        }
+
+        // ============================================================
+        // Колонны (уровень 4) — поверх сетки
+        // ============================================================
+        for (const auto& p : ui.pillars) {
+            const float side = p.halfSize * 2.0f;
+
+            // Тело колонны — квадрат
+            sf::RectangleShape body({ side, side });
+            body.setOrigin({ p.halfSize, p.halfSize });
+            body.setPosition(p.pos);
+            body.setFillColor(sf::Color(70, 75, 90));
+            body.setOutlineColor(sf::Color(160, 175, 200));
+            body.setOutlineThickness(3.5f * worldPerPixel);
+            target.draw(body);
+
+            // Внутренняя «насечка»
+            float innerSide = side * 0.55f;
+            sf::RectangleShape inner({ innerSide, innerSide });
+            inner.setOrigin({ innerSide * 0.5f, innerSide * 0.5f });
+            inner.setPosition(p.pos);
+            inner.setFillColor(sf::Color(90, 100, 120));
+            inner.setOutlineColor(sf::Color(140, 155, 185));
+            inner.setOutlineThickness(2.0f * worldPerPixel);
+            target.draw(inner);
+
+            // Расширенный контур касания — квадрат
+            float ext = p.halfSize + L4_PILLAR_TOUCH_DIST;
+            sf::RectangleShape touch({ ext * 2.0f, ext * 2.0f });
+            touch.setOrigin({ ext, ext });
+            touch.setPosition(p.pos);
+            touch.setFillColor(sf::Color::Transparent);
+            touch.setOutlineColor(sf::Color(120, 200, 255, 60));
+            touch.setOutlineThickness(1.0f * worldPerPixel);
+            target.draw(touch);
+        }
+
+        // ============================================================
+        // Борта (уровень 6) — неразрушимые стенки корзин
+        // ============================================================
+        for (const auto& b : ui.barriers) {
+            sf::RectangleShape body({ b.halfSize.x * 2.0f,
+                                       b.halfSize.y * 2.0f });
+            body.setOrigin({ b.halfSize.x, b.halfSize.y });
+            body.setPosition(b.pos);
+            body.setFillColor(sf::Color(120, 120, 130));
+            body.setOutlineColor(sf::Color(180, 180, 195));
+            body.setOutlineThickness(2.0f * worldPerPixel);
+            target.draw(body);
         }
 
         // Связи
@@ -465,6 +527,21 @@ void drawEverything(sf::RenderTarget& target,
             if (screenR < 2.0f) screenR = 2.0f;
             float worldR = screenR * worldPerPixel;
 
+            // След (L6)
+            if (!n.trail.empty()) {
+                sf::VertexArray trailVA(sf::PrimitiveType::LineStrip,
+                    n.trail.size() + 1);
+                for (size_t k = 0; k < n.trail.size(); ++k) {
+                    float a = (float)k / (float)(n.trail.size() + 1);
+                    std::uint8_t alpha = static_cast<std::uint8_t>(200.0f * a);
+                    trailVA[k] = sf::Vertex(n.trail[k],
+                        sf::Color(200, 220, 255, alpha));
+                }
+                trailVA[n.trail.size()] = sf::Vertex(n.pos,
+                    sf::Color(200, 220, 255, 220));
+                target.draw(trailVA);
+            }
+
             sf::CircleShape c(worldR);
             c.setOrigin({ worldR, worldR });
             c.setPosition(n.pos);
@@ -570,7 +647,7 @@ void drawEverything(sf::RenderTarget& target,
         }
 
         // Hover-preview спавна
-        if (ui.selectedSpawnType >= 0) {
+        if (ui.selectedSpawnType >= 0 || ui.spawnWaterSelected) {
             sf::Vector2i mp = mousePixel;
             sf::Vector2f worldPos;
             bool show = false;
@@ -589,23 +666,68 @@ void drawEverything(sf::RenderTarget& target,
             }
 
             if (show) {
-                const AtomType& t = ATOM_TYPES[ui.selectedSpawnType];
                 float halfXb = ui.boxSizeX / 2.0f;
                 float halfYb = ui.boxSizeY / 2.0f;
-                worldPos.x = std::clamp(worldPos.x, -halfXb + t.radius, halfXb - t.radius);
-                worldPos.y = std::clamp(worldPos.y, -halfYb + t.radius, halfYb - t.radius);
 
-                sf::Color previewFill = t.color;
-                previewFill.a = 110;
-                sf::Color previewOutline(200, 200, 200, 180);
+                if (ui.spawnWaterSelected) {
+                    // --- Превью H2O ---
+                    const float halfAng = WATER_ANGLE_DEG * 0.5f * 3.14159265f / 180.0f;
+                    const float bLen = getMorsePair(0, 1).re;
+                    sf::Vector2f h1Local = rotateVec(
+                        { std::cos(halfAng),  std::sin(halfAng) },
+                        ui.waterSpawnRotation) * bLen;
+                    sf::Vector2f h2Local = rotateVec(
+                        { std::cos(halfAng), -std::sin(halfAng) },
+                        ui.waterSpawnRotation) * bLen;
 
-                sf::CircleShape preview(t.radius);
-                preview.setOrigin({ t.radius, t.radius });
-                preview.setPosition(worldPos);
-                preview.setFillColor(previewFill);
-                preview.setOutlineColor(previewOutline);
-                preview.setOutlineThickness(2.0f * worldPerPixel);
-                target.draw(preview);
+                    float oR = ATOM_TYPES[1].radius;
+                    float hR = ATOM_TYPES[0].radius;
+
+                    worldPos.x = std::clamp(worldPos.x,
+                        -halfXb + oR + bLen, halfXb - oR - bLen);
+                    worldPos.y = std::clamp(worldPos.y,
+                        -halfYb + oR + bLen, halfYb - oR - bLen);
+
+                    auto drawPreviewAtom = [&](sf::Vector2f p, float r, sf::Color col) {
+                        sf::Color fill = col; fill.a = 130;
+                        sf::CircleShape c(r);
+                        c.setOrigin({ r, r });
+                        c.setPosition(p);
+                        c.setFillColor(fill);
+                        c.setOutlineColor(sf::Color(200, 220, 255, 200));
+                        c.setOutlineThickness(2.0f * worldPerPixel);
+                        target.draw(c);
+                        };
+
+                    // Связи
+                    sf::VertexArray lines(sf::PrimitiveType::Lines, 4);
+                    lines[0] = sf::Vertex(worldPos, sf::Color(220, 200, 200, 180));
+                    lines[1] = sf::Vertex(worldPos + h1Local, sf::Color(220, 200, 200, 180));
+                    lines[2] = sf::Vertex(worldPos, sf::Color(220, 200, 200, 180));
+                    lines[3] = sf::Vertex(worldPos + h2Local, sf::Color(220, 200, 200, 180));
+                    target.draw(lines);
+
+                    drawPreviewAtom(worldPos, oR, ATOM_TYPES[1].color);
+                    drawPreviewAtom(worldPos + h1Local, hR, ATOM_TYPES[0].color);
+                    drawPreviewAtom(worldPos + h2Local, hR, ATOM_TYPES[0].color);
+                }
+                else {
+                    const AtomType& t = ATOM_TYPES[ui.selectedSpawnType];
+                    worldPos.x = std::clamp(worldPos.x,
+                        -halfXb + t.radius, halfXb - t.radius);
+                    worldPos.y = std::clamp(worldPos.y,
+                        -halfYb + t.radius, halfYb - t.radius);
+
+                    sf::Color previewFill = t.color;
+                    previewFill.a = 110;
+                    sf::CircleShape preview(t.radius);
+                    preview.setOrigin({ t.radius, t.radius });
+                    preview.setPosition(worldPos);
+                    preview.setFillColor(previewFill);
+                    preview.setOutlineColor(sf::Color(200, 200, 200, 180));
+                    preview.setOutlineThickness(2.0f * worldPerPixel);
+                    target.draw(preview);
+                }
             }
         }
 
@@ -657,7 +779,47 @@ void drawEverything(sf::RenderTarget& target,
             }
         }
 
-        // Температурная виньетка
+        // ============================================================
+        // Зона спавна (L6) — пульсирующий круг.
+        // Рисуется ВНУТРИ world-блока, пока view = camera, поэтому
+        // мировые координаты зоны ложатся куда надо. Если вынести
+        // этот блок наружу (после переключения на screenView),
+        // зона «улетит» в верхний-левый угол экрана и сольётся
+        // с ураном первого кольца.
+        // ============================================================
+        if (ui.campaignMode && ui.campaignLevel == 6
+            && ui.activeSpawnZone.active) {
+            float R = ui.activeSpawnZone.radius;
+
+            // Мягкая пульсация свечения
+            float pulse = 0.5f + 0.5f * std::sin(
+                (float)std::clock() / (float)CLOCKS_PER_SEC * 3.0f);
+
+            // Заливка — зелёная и почти прозрачная (alpha 15..27).
+            sf::CircleShape zone(R);
+            zone.setOrigin({ R, R });
+            zone.setPosition(ui.activeSpawnZone.pos);
+            zone.setFillColor(sf::Color(90, 220, 120,
+                (std::uint8_t)(15.0f + 12.0f * pulse)));
+            target.draw(zone);
+
+            // Внешний контур — тот же зелёный, но заметный.
+            // Это единственный «читаемый» элемент зоны, поэтому alpha
+            // держим высокой (150..210).
+            sf::CircleShape ring(R);
+            ring.setOrigin({ R, R });
+            ring.setPosition(ui.activeSpawnZone.pos);
+            ring.setFillColor(sf::Color::Transparent);
+            ring.setOutlineColor(sf::Color(140, 250, 170,
+                (std::uint8_t)(150.0f + 60.0f * pulse)));
+            ring.setOutlineThickness(2.0f * worldPerPixel);
+            target.draw(ring);
+
+            // (крест убран — только кольцо)
+        }
+
+        // Температурная виньетка — единственный экземпляр,
+        // внутри world-блока, чтобы DrawPass::World её тоже получил.
         {
             sf::View screenView(sf::FloatRect({ 0.0f, 0.0f },
                 { (float)winSize.x, (float)winSize.y }));
@@ -716,6 +878,23 @@ void drawEverything(sf::RenderTarget& target,
                     target.draw(directionMarker);
                 }
             }
+        }
+
+        // Индикатор угла поворота молекулы H2O (экранный слой)
+        if (ui.spawnWaterSelected && fontLoaded) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.0f°",
+                ui.waterSpawnRotation * 180.0f / 3.14159265f);
+            int fs = (int)std::round(14.0f * S);
+            sf::Text t(font, buf, fs);
+            t.setFillColor(sf::Color(220, 230, 255));
+            t.setStyle(sf::Text::Bold);
+            sf::FloatRect tb = t.getLocalBounds();
+            t.setOrigin({ tb.position.x + tb.size.x * 0.5f,
+                          tb.position.y + tb.size.y * 0.5f });
+            t.setPosition({ (float)mousePixel.x - 44.0f * S,
+                            (float)mousePixel.y - 26.0f * S });
+            target.draw(t);
         }
 
         // Индикатор скорости при drag-спавне
@@ -918,13 +1097,24 @@ void drawEverything(sf::RenderTarget& target,
             // В L1 температура заблокирована всегда.
             // В L2 — до наступления фазы 4 (после «воды + пероксид»).
             const bool tempDisabled =
-                ui.campaignMode &&
-                (ui.campaignLevel == 1
-                    || (ui.campaignLevel == 2 && ui.taskPhase < 3));
+                ui.campaignMode
+                && (ui.campaignLevel == 1
+                    || (ui.campaignLevel == 2 && ui.taskPhase < 3)
+                    || ui.campaignLevel == 4
+                    || ui.campaignLevel == 6);
+
+            // На L4 ускорение времени не работает — симуляция всегда
+            // идёт с ×1. Поэтому слайдер скорости серый и некликабельный
+            // (ввод уже заблокирован в AtomSimulation.cpp по l4locked).
+            const bool speedDisabled =
+                ui.campaignMode
+                && (ui.campaignLevel == 4 || ui.campaignLevel == 6);
 
             if (fontLoaded) {
                 sf::Text speedLabel(font, tr(Loc::Speed, ui.language), 14);
-                speedLabel.setFillColor(sf::Color(180, 180, 180));
+                speedLabel.setFillColor(speedDisabled
+                    ? sf::Color(90, 90, 95)
+                    : sf::Color(180, 180, 180));
                 sf::FloatRect lb = speedLabel.getLocalBounds();
                 speedLabel.setOrigin({ lb.position.x, lb.position.y + lb.size.y / 2.0f });
                 speedLabel.setPosition({ 16.0f, trackY });
@@ -934,24 +1124,32 @@ void drawEverything(sf::RenderTarget& target,
             sf::RectangleShape track(sf::Vector2f(SLIDER_WIDTH, 4.0f));
             track.setOrigin({ 0.0f, 2.0f });
             track.setPosition({ SLIDER_LEFT, trackY });
-            track.setFillColor(sf::Color(70, 70, 80));
+            track.setFillColor(speedDisabled
+                ? sf::Color(50, 50, 55)
+                : sf::Color(70, 70, 80));
             target.draw(track);
 
             float knobPos = valueToPos(ui.speedSlider.value);
             sf::RectangleShape trackFill(sf::Vector2f(SLIDER_WIDTH * knobPos, 4.0f));
             trackFill.setOrigin({ 0.0f, 2.0f });
             trackFill.setPosition({ SLIDER_LEFT, trackY });
-            trackFill.setFillColor(sf::Color(70, 130, 210));
+            trackFill.setFillColor(speedDisabled
+                ? sf::Color(70, 70, 75)
+                : sf::Color(70, 130, 210));
             target.draw(trackFill);
 
             if (fontLoaded) {
                 sf::Text minLbl(font, "0x", 10);
-                minLbl.setFillColor(sf::Color(110, 110, 110));
+                minLbl.setFillColor(speedDisabled
+                    ? sf::Color(70, 70, 75)
+                    : sf::Color(110, 110, 110));
                 minLbl.setPosition({ SLIDER_LEFT - 4.0f, trackY + 6.0f });
                 target.draw(minLbl);
 
                 sf::Text maxLbl(font, "50x", 10);
-                maxLbl.setFillColor(sf::Color(110, 110, 110));
+                maxLbl.setFillColor(speedDisabled
+                    ? sf::Color(70, 70, 75)
+                    : sf::Color(110, 110, 110));
                 maxLbl.setPosition({ SLIDER_LEFT + SLIDER_WIDTH - 18.0f, trackY + 6.0f });
                 target.draw(maxLbl);
             }
@@ -961,14 +1159,24 @@ void drawEverything(sf::RenderTarget& target,
             knob.setOrigin({ SLIDER_KNOB_R, SLIDER_KNOB_R });
             knob.setPosition({ knobX, trackY });
             bool paused = (ui.speedSlider.value <= 0.0f);
-            knob.setFillColor(paused ? sf::Color(240, 160, 60) : sf::Color(90, 160, 240));
-            knob.setOutlineColor(sf::Color(200, 220, 255));
+            if (speedDisabled) {
+                knob.setFillColor(sf::Color(70, 70, 75));
+                knob.setOutlineColor(sf::Color(120, 120, 125));
+            }
+            else {
+                knob.setFillColor(paused ? sf::Color(240, 160, 60)
+                    : sf::Color(90, 160, 240));
+                knob.setOutlineColor(sf::Color(200, 220, 255));
+            }
             knob.setOutlineThickness(2.0f);
             target.draw(knob);
 
             if (fontLoaded) {
                 sf::Text valueText(font, formatSpeed(ui.speedSlider.value), 15);
-                valueText.setFillColor(paused ? sf::Color(255, 200, 100) : sf::Color(220, 220, 220));
+                valueText.setFillColor(speedDisabled
+                    ? sf::Color(120, 120, 125)
+                    : (paused ? sf::Color(255, 200, 100)
+                        : sf::Color(220, 220, 220)));
                 valueText.setPosition({ SLIDER_LEFT + SLIDER_WIDTH + 16.0f, trackY - 9.0f });
                 target.draw(valueText);
 
@@ -976,8 +1184,12 @@ void drawEverything(sf::RenderTarget& target,
                 float rbY = trackY - RESET_BTN_H / 2.0f;
                 sf::RectangleShape resetBtn(sf::Vector2f(RESET_BTN_W, RESET_BTN_H));
                 resetBtn.setPosition({ rbX, rbY });
-                resetBtn.setFillColor(sf::Color(45, 45, 50));
-                resetBtn.setOutlineColor(sf::Color(110, 110, 110));
+                resetBtn.setFillColor(speedDisabled
+                    ? sf::Color(35, 35, 40)
+                    : sf::Color(45, 45, 50));
+                resetBtn.setOutlineColor(speedDisabled
+                    ? sf::Color(70, 70, 75)
+                    : sf::Color(110, 110, 110));
                 resetBtn.setOutlineThickness(1.0f);
                 target.draw(resetBtn);
 
@@ -985,7 +1197,9 @@ void drawEverything(sf::RenderTarget& target,
                 sf::FloatRect rb = resetLbl.getLocalBounds();
                 resetLbl.setOrigin({ rb.position.x + rb.size.x / 2.0f, rb.position.y + rb.size.y / 2.0f });
                 resetLbl.setPosition({ rbX + RESET_BTN_W / 2.0f, rbY + RESET_BTN_H / 2.0f });
-                resetLbl.setFillColor(sf::Color(220, 220, 220));
+                resetLbl.setFillColor(speedDisabled
+                    ? sf::Color(120, 120, 125)
+                    : sf::Color(220, 220, 220));
                 target.draw(resetLbl);
             }
 
@@ -1386,7 +1600,7 @@ void drawEverything(sf::RenderTarget& target,
             //  • L3 фазы 1 (H3O+), 2 (одиночные Cl), 3 (complete)
             const bool hintAvailable =
                 (isLevel2 && (ui.taskPhase == 2 || ui.taskPhase == 4))
-                || (isLevel3 && (ui.taskPhase >= 1 && ui.taskPhase <= 3));
+                || (isLevel3 && (ui.taskPhase >= 1 && ui.taskPhase <= 2));
             if (hintAvailable) {
                 sf::FloatRect hbRect(
                     { tX + 12.0f * S, y },
@@ -1461,7 +1675,9 @@ void drawEverything(sf::RenderTarget& target,
                     drawHint(tr(Loc::Hint3_2_2, ui.language));
                     drawHint(tr(Loc::Hint3_2_3, ui.language));
                 }
-                else if (ui.taskPhase == 3 && ui.hintButtonOpen) {
+                else if (ui.taskPhase == 3) {
+                    // Финальная фаза L3 — подсказки показываются всегда,
+                    // без нажатия на кнопку.
                     drawHint(tr(Loc::Hint3_1, ui.language));
                     drawHint(tr(Loc::Level3CompleteDesc, ui.language));
                 }
@@ -1570,10 +1786,463 @@ void drawEverything(sf::RenderTarget& target,
                 target.draw(nbg);
 
                 int nfs = (int)std::round(15.0f * S);
-                sf::String nl;
-                if (isLevel3) nl = tr(Loc::FinishLevel, ui.language);
-                else          nl = tr(Loc::NextLevel, ui.language);
+                // L3 больше не финал кампании — ведёт на L4, поэтому
+                // надпись всегда «Next Level».
+                sf::String nl = tr(Loc::NextLevel, ui.language);
                 sf::Text nt(font, nl, nfs);
+                nt.setFillColor(sf::Color(230, 245, 235, a255));
+                nt.setStyle(sf::Text::Bold);
+                sf::FloatRect ntb = nt.getLocalBounds();
+                nt.setOrigin({ ntb.position.x + ntb.size.x * 0.5f,
+                               ntb.position.y + ntb.size.y * 0.5f });
+                nt.setPosition({ nr.position.x + nr.size.x * 0.5f,
+                                 nr.position.y + nr.size.y * 0.5f });
+                target.draw(nt);
+            }
+        }
+
+        // ============================================================
+        // Панель задачи — уровень 4
+        // ============================================================
+        if (ui.campaignMode && fontLoaded && ui.campaignLevel == 4) {
+            float tW = 360.0f * S;
+            float tMargin = STATS_MARGIN * S;
+            float tHeaderH = MENU_HEADER_H * S;
+            float tH = L4_TASK_PANEL_H * S;
+
+            float tX = (float)winSize.x - tW - tMargin;
+            float tY = PANEL_HEIGHT + 10.0f * S;
+
+            const bool finalPhase = (ui.taskPhase == 2);
+
+            sf::RectangleShape bg(sf::Vector2f(tW, tH));
+            bg.setPosition({ tX, tY });
+            bg.setFillColor(sf::Color(25, 25, 30, 240));
+            bg.setOutlineColor(finalPhase
+                ? sf::Color(90, 200, 130)
+                : sf::Color(70, 70, 80));
+            bg.setOutlineThickness(finalPhase ? 2.0f : 1.0f);
+            target.draw(bg);
+
+            sf::RectangleShape header(sf::Vector2f(tW, tHeaderH));
+            header.setPosition({ tX, tY });
+            header.setFillColor(sf::Color(40, 40, 50, 255));
+            target.draw(header);
+
+            {
+                sf::Text t(font, tr(Loc::TaskHeader, ui.language),
+                    (int)std::round(14.0f * S));
+                t.setFillColor(sf::Color(220, 220, 220));
+                t.setStyle(sf::Text::Bold);
+                t.setPosition({ tX + 10.0f * S, tY + 5.0f * S });
+                target.draw(t);
+            }
+
+            float a = std::clamp(ui.taskTextAlpha, 0.0f, 1.0f);
+            std::uint8_t a255 = static_cast<std::uint8_t>(a * 255.0f);
+
+            float y = tY + tHeaderH + 10.0f * S;
+
+            // Название уровня
+            {
+                sf::Text t(font, tr(Loc::Level4Title, ui.language),
+                    (int)std::round(16.0f * S));
+                t.setFillColor(sf::Color(255, 220, 150, a255));
+                t.setStyle(sf::Text::Bold);
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+            }
+            y += 24.0f * S;
+
+            // Цель
+            {
+                sf::String g = (ui.taskPhase == 2)
+                    ? tr(Loc::Goal4Complete, ui.language)
+                    : tr(Loc::Goal4Phase1, ui.language);
+                sf::Text t(font, g, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(200, 210, 225, a255));
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                float gh = t.getLocalBounds().size.y;
+                if (gh < 16.0f * S) gh = 16.0f * S;
+                y += gh + 6.0f * S;
+            }
+
+            // Подсказка про слабую гравитацию (всегда видна)
+            {
+                sf::Text t(font, tr(Loc::Hint4Gravity, ui.language),
+                    (int)std::round(12.0f * S));
+                t.setFillColor(sf::Color(200, 190, 150, a255));
+                t.setStyle(sf::Text::Italic);
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                y += 16.0f * S + 4.0f * S;
+            }
+
+            // Подсказка про отключённую паузу на L4
+            {
+                sf::Text t(font, tr(Loc::Hint4NoPause, ui.language),
+                    (int)std::round(12.0f * S));
+                t.setFillColor(sf::Color(200, 190, 150, a255));
+                t.setStyle(sf::Text::Italic);
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                y += 16.0f * S + 6.0f * S;
+            }
+
+            // Прогресс: колонны
+            {
+                float barX = tX + 12.0f * S;
+                float barY = y;
+                float barW = tW - 24.0f * S;
+                float barH = 22.0f * S;
+
+                sf::RectangleShape barBg({ barW, barH });
+                barBg.setPosition({ barX, barY });
+                barBg.setFillColor(sf::Color(20, 20, 25, a255));
+                barBg.setOutlineColor(sf::Color(90, 90, 100, a255));
+                barBg.setOutlineThickness(1.0f);
+                target.draw(barBg);
+
+                float frac = std::clamp((float)ui.taskPillarsConnected / 3.0f,
+                    0.0f, 1.0f);
+                if (frac > 0.0f) {
+                    sf::RectangleShape fill({ barW * frac, barH });
+                    fill.setPosition({ barX, barY });
+                    fill.setFillColor(finalPhase
+                        ? sf::Color(70, 180, 110, a255)
+                        : sf::Color(70, 130, 210, a255));
+                    target.draw(fill);
+                }
+
+                sf::String label = tr(Loc::TaskPillarsPrefix, ui.language);
+                label += sf::String(" ")
+                    + sf::String(std::to_string(ui.taskPillarsConnected))
+                    + sf::String(" / 3");
+                sf::Text t(font, label, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(255, 255, 255, a255));
+                t.setStyle(sf::Text::Bold);
+                sf::FloatRect tb = t.getLocalBounds();
+                t.setOrigin({ tb.position.x + tb.size.x * 0.5f,
+                              tb.position.y + tb.size.y * 0.5f });
+                t.setPosition({ barX + barW * 0.5f, barY + barH * 0.5f });
+                target.draw(t);
+
+                y += barH + 8.0f * S;
+            }
+
+            // Прогресс: таймер удержания моста
+            {
+                float barX = tX + 12.0f * S;
+                float barY = y;
+                float barW = tW - 24.0f * S;
+                float barH = 22.0f * S;
+
+                sf::RectangleShape barBg({ barW, barH });
+                barBg.setPosition({ barX, barY });
+                barBg.setFillColor(sf::Color(20, 20, 25, a255));
+                barBg.setOutlineColor(sf::Color(90, 90, 100, a255));
+                barBg.setOutlineThickness(1.0f);
+                target.draw(barBg);
+
+                float frac = std::clamp(
+                    ui.taskBridgeHoldTimer / L4_BRIDGE_HOLD_TIME, 0.0f, 1.0f);
+                if (frac > 0.0f) {
+                    sf::RectangleShape fill({ barW * frac, barH });
+                    fill.setPosition({ barX, barY });
+                    fill.setFillColor(sf::Color(70, 180, 110, a255));
+                    target.draw(fill);
+                }
+
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "%.1f / %.1f s",
+                    ui.taskBridgeHoldTimer, L4_BRIDGE_HOLD_TIME);
+                sf::Text t(font, buf, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(255, 255, 255, a255));
+                t.setStyle(sf::Text::Bold);
+                sf::FloatRect tb = t.getLocalBounds();
+                t.setOrigin({ tb.position.x + tb.size.x * 0.5f,
+                              tb.position.y + tb.size.y * 0.5f });
+                t.setPosition({ barX + barW * 0.5f, barY + barH * 0.5f });
+                target.draw(t);
+
+                y += barH + 8.0f * S;
+            }
+
+            // Запас
+            {
+                sf::String s = tr(Loc::TaskStockPrefix, ui.language);
+                s += sf::String(":  H ") + sf::String(std::to_string(ui.stockH))
+                    + sf::String("   O ") + sf::String(std::to_string(ui.stockO));
+                sf::Text t(font, s, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(220, 200, 150, a255));
+                t.setStyle(sf::Text::Bold);
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                y += 20.0f * S;
+            }
+
+            // Разделитель
+            {
+                sf::RectangleShape line(sf::Vector2f(tW - 24.0f * S, 1.0f));
+                line.setPosition({ tX + 12.0f * S, y });
+                line.setFillColor(sf::Color(60, 60, 70, a255));
+                target.draw(line);
+            }
+            y += 8.0f * S;
+
+            // Подсказки
+            int hfs = (int)std::round(12.0f * S);
+            float hRowH = 17.0f * S;
+            auto drawHint = [&](const sf::String& s) {
+                sf::Text t(font, s, hfs);
+                t.setFillColor(sf::Color(170, 180, 200, a255));
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                y += hRowH;
+                };
+
+            if (ui.taskPhase == 1) {
+                drawHint(tr(Loc::Hint4_1, ui.language));
+                drawHint(tr(Loc::Hint4_2, ui.language));
+                drawHint(tr(Loc::Hint4_3, ui.language));
+                drawHint(tr(Loc::Hint4_4, ui.language));
+            }
+            else if (ui.taskPhase == 2) {
+                drawHint(tr(Loc::Hint3_1, ui.language));
+                drawHint(tr(Loc::Level4CompleteDesc, ui.language));
+            }
+
+            y += 6.0f * S;
+
+            // Финальная кнопка
+            if (ui.taskPhase == 2) {
+                sf::FloatRect nr = nextLevelButtonRect(winSize, L4_TASK_PANEL_H);
+
+                sf::RectangleShape nbg({ nr.size.x, nr.size.y });
+                nbg.setPosition(nr.position);
+                if (ui.nextLevelButtonHovered) {
+                    nbg.setFillColor(sf::Color(90, 180, 130, 240));
+                    nbg.setOutlineColor(sf::Color(180, 255, 200, 255));
+                }
+                else {
+                    nbg.setFillColor(sf::Color(50, 130, 90, 230));
+                    nbg.setOutlineColor(sf::Color(140, 220, 170, 255));
+                }
+                nbg.setOutlineThickness(1.5f * S);
+                target.draw(nbg);
+
+                sf::Text nt(font, tr(Loc::FinishLevel, ui.language),
+                    (int)std::round(15.0f * S));
+                nt.setFillColor(sf::Color(230, 245, 235, a255));
+                nt.setStyle(sf::Text::Bold);
+                sf::FloatRect ntb = nt.getLocalBounds();
+                nt.setOrigin({ ntb.position.x + ntb.size.x * 0.5f,
+                               ntb.position.y + ntb.size.y * 0.5f });
+                nt.setPosition({ nr.position.x + nr.size.x * 0.5f,
+                                 nr.position.y + nr.size.y * 0.5f });
+                target.draw(nt);
+            }
+        }
+
+        // ============================================================
+// Панель задачи — уровень 6
+// ============================================================
+        if (ui.campaignMode && fontLoaded && ui.campaignLevel == 6) {
+            float tW = 360.0f * S;
+            float tMargin = STATS_MARGIN * S;
+            float tHeaderH = MENU_HEADER_H * S;
+            float tH = L6_TASK_PANEL_H * S;
+
+            float tX = (float)winSize.x - tW - tMargin;
+            float tY = PANEL_HEIGHT + 10.0f * S;
+
+            const bool finalPhase = (ui.taskPhase == L6_RING_COUNT + 1);
+
+            sf::RectangleShape bg({ tW, tH });
+            bg.setPosition({ tX, tY });
+            bg.setFillColor(sf::Color(25, 25, 30, 240));
+            bg.setOutlineColor(finalPhase
+                ? sf::Color(90, 200, 130)
+                : sf::Color(70, 70, 80));
+            bg.setOutlineThickness(finalPhase ? 2.0f : 1.0f);
+            target.draw(bg);
+
+            sf::RectangleShape header({ tW, tHeaderH });
+            header.setPosition({ tX, tY });
+            header.setFillColor(sf::Color(40, 40, 50, 255));
+            target.draw(header);
+
+            {
+                sf::Text t(font, tr(Loc::TaskHeader, ui.language),
+                    (int)std::round(14.0f * S));
+                t.setFillColor(sf::Color(220, 220, 220));
+                t.setStyle(sf::Text::Bold);
+                t.setPosition({ tX + 10.0f * S, tY + 5.0f * S });
+                target.draw(t);
+            }
+
+            float a = std::clamp(ui.taskTextAlpha, 0.0f, 1.0f);
+            std::uint8_t a255 = static_cast<std::uint8_t>(a * 255.0f);
+
+            float y = tY + tHeaderH + 10.0f * S;
+
+            {
+                sf::Text t(font, tr(Loc::Level6Title, ui.language),
+                    (int)std::round(16.0f * S));
+                t.setFillColor(sf::Color(255, 220, 150, a255));
+                t.setStyle(sf::Text::Bold);
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+            }
+            y += 24.0f * S;
+
+            // Цель
+            {
+                sf::String g;
+                if (finalPhase) g = tr(Loc::Goal6Complete, ui.language);
+                else            g = tr(Loc::Goal6Phase1, ui.language);
+                sf::Text t(font, g, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(200, 210, 225, a255));
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                float gh = t.getLocalBounds().size.y;
+                if (gh < 16.0f * S) gh = 16.0f * S;
+                y += gh + 6.0f * S;
+            }
+
+            // Прогресс: кольца
+            {
+                float barX = tX + 12.0f * S;
+                float barY = y;
+                float barW = tW - 24.0f * S;
+                float barH = 22.0f * S;
+
+                sf::RectangleShape barBg({ barW, barH });
+                barBg.setPosition({ barX, barY });
+                barBg.setFillColor(sf::Color(20, 20, 25, a255));
+                barBg.setOutlineColor(sf::Color(90, 90, 100, a255));
+                barBg.setOutlineThickness(1.0f);
+                target.draw(barBg);
+
+                float frac = std::clamp(
+                    (float)ui.ringIndex / (float)L6_RING_COUNT, 0.0f, 1.0f);
+                if (finalPhase) frac = 1.0f;
+                if (frac > 0.0f) {
+                    sf::RectangleShape fill({ barW * frac, barH });
+                    fill.setPosition({ barX, barY });
+                    fill.setFillColor(finalPhase
+                        ? sf::Color(70, 180, 110, a255)
+                        : sf::Color(70, 130, 210, a255));
+                    target.draw(fill);
+                }
+
+                sf::String label = tr(Loc::TaskRingsPrefix, ui.language);
+                label += sf::String(" ")
+                    + sf::String(std::to_string(std::min(ui.ringIndex,
+                        L6_RING_COUNT)))
+                    + sf::String(" / ")
+                    + sf::String(std::to_string(L6_RING_COUNT));
+                sf::Text t(font, label, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(255, 255, 255, a255));
+                t.setStyle(sf::Text::Bold);
+                sf::FloatRect tb = t.getLocalBounds();
+                t.setOrigin({ tb.position.x + tb.size.x * 0.5f,
+                              tb.position.y + tb.size.y * 0.5f });
+                t.setPosition({ barX + barW * 0.5f, barY + barH * 0.5f });
+                target.draw(t);
+                y += barH + 8.0f * S;
+            }
+
+            // Прогресс: уран на текущем кольце
+            if (!finalPhase) {
+                float barX = tX + 12.0f * S;
+                float barY = y;
+                float barW = tW - 24.0f * S;
+                float barH = 22.0f * S;
+
+                sf::RectangleShape barBg({ barW, barH });
+                barBg.setPosition({ barX, barY });
+                barBg.setFillColor(sf::Color(20, 20, 25, a255));
+                barBg.setOutlineColor(sf::Color(90, 90, 100, a255));
+                barBg.setOutlineThickness(1.0f);
+                target.draw(barBg);
+
+                int total = L6_URANIUM_PER_RING;
+                int left = ui.ringUraniumRemaining;
+                int done = total - left;
+                float frac = std::clamp((float)done / (float)total,
+                    0.0f, 1.0f);
+                if (frac > 0.0f) {
+                    sf::RectangleShape fill({ barW * frac, barH });
+                    fill.setPosition({ barX, barY });
+                    fill.setFillColor(sf::Color(70, 180, 110, a255));
+                    target.draw(fill);
+                }
+
+                sf::String label = tr(Loc::TaskUraniumPrefix, ui.language);
+                label += sf::String(" ")
+                    + sf::String(std::to_string(done))
+                    + sf::String(" / ")
+                    + sf::String(std::to_string(total));
+                sf::Text t(font, label, (int)std::round(13.0f * S));
+                t.setFillColor(sf::Color(255, 255, 255, a255));
+                t.setStyle(sf::Text::Bold);
+                sf::FloatRect tb = t.getLocalBounds();
+                t.setOrigin({ tb.position.x + tb.size.x * 0.5f,
+                              tb.position.y + tb.size.y * 0.5f });
+                t.setPosition({ barX + barW * 0.5f, barY + barH * 0.5f });
+                target.draw(t);
+                y += barH + 8.0f * S;
+            }
+
+            // Разделитель
+            {
+                sf::RectangleShape line({ tW - 24.0f * S, 1.0f });
+                line.setPosition({ tX + 12.0f * S, y });
+                line.setFillColor(sf::Color(60, 60, 70, a255));
+                target.draw(line);
+            }
+            y += 8.0f * S;
+
+            // Подсказки
+            int hfs = (int)std::round(12.0f * S);
+            float hRowH = 17.0f * S;
+            auto drawHint = [&](const sf::String& s) {
+                sf::Text t(font, s, hfs);
+                t.setFillColor(sf::Color(170, 180, 200, a255));
+                t.setPosition({ tX + 12.0f * S, y });
+                target.draw(t);
+                y += hRowH;
+                };
+
+            if (!finalPhase) {
+                drawHint(tr(Loc::HintL6_1, ui.language));
+                drawHint(tr(Loc::HintL6_2, ui.language));
+            }
+            else {
+                drawHint(tr(Loc::Hint3_1, ui.language));
+                drawHint(tr(Loc::Level6CompleteDesc, ui.language));
+            }
+
+            // Финальная кнопка
+            if (finalPhase) {
+                sf::FloatRect nr = nextLevelButtonRect(winSize, L6_TASK_PANEL_H);
+                sf::RectangleShape nbg({ nr.size.x, nr.size.y });
+                nbg.setPosition(nr.position);
+                if (ui.nextLevelButtonHovered) {
+                    nbg.setFillColor(sf::Color(90, 180, 130, 240));
+                    nbg.setOutlineColor(sf::Color(180, 255, 200, 255));
+                }
+                else {
+                    nbg.setFillColor(sf::Color(50, 130, 90, 230));
+                    nbg.setOutlineColor(sf::Color(140, 220, 170, 255));
+                }
+                nbg.setOutlineThickness(1.5f * S);
+                target.draw(nbg);
+
+                sf::Text nt(font, tr(Loc::FinishLevel, ui.language),
+                    (int)std::round(15.0f * S));
                 nt.setFillColor(sf::Color(230, 245, 235, a255));
                 nt.setStyle(sf::Text::Bold);
                 sf::FloatRect ntb = nt.getLocalBounds();
@@ -1600,7 +2269,7 @@ void drawEverything(sf::RenderTarget& target,
             float statsY = PANEL_HEIGHT + 10.0f;
 
             // В кампании панель задач занимает верх, поэтому статистику
-    // сдвигаем вниз под неё.
+            // сдвигаем вниз под неё.
             if (ui.campaignMode && ui.campaignLevel == 1) {
                 statsY += 400.0f * S + 10.0f * S;
             }
@@ -1840,7 +2509,8 @@ void drawEverything(sf::RenderTarget& target,
         // ============================================================
         // Меню спавна
         // ============================================================
-        if (ui.spawnMenuOpen) {
+        if (ui.spawnMenuOpen
+            && !(ui.campaignMode && ui.campaignLevel == 6)) {
             float mLeft = MENU_LEFT * S;
             float mTop = PANEL_HEIGHT + 10.0f * S;
             float mWidth = MENU_WIDTH * S;
@@ -1848,11 +2518,13 @@ void drawEverything(sf::RenderTarget& target,
             float mRowH = MENU_ROW_H * S;
             float mFooterH = MENU_FOOTER_H * S;
             int rowCount;
-            if (!ui.campaignMode)                       rowCount = (int)ATOM_TYPES.size();
+            if (!ui.campaignMode)                       rowCount = (int)ATOM_TYPES.size() + 1; // +Water
             else if (ui.campaignLevel == 1)             rowCount = 1;
             else if (ui.campaignLevel == 2)             rowCount = 2;
             else if (ui.campaignLevel == 3)             rowCount = 3;
-            else                                        rowCount = (int)ATOM_TYPES.size();
+            else if (ui.campaignLevel == 4)             rowCount = 3;   // H, O, Water
+            else if (ui.campaignLevel == 6)             rowCount = 0;   // ← НОВОЕ: L6 без меню
+            else                                        rowCount = (int)ATOM_TYPES.size() + 1;
             float mTotalH = mHeaderH + (float)rowCount * mRowH + mFooterH;
 
             float rIconX = ROW_ICON_X * S;
@@ -1887,7 +2559,10 @@ void drawEverything(sf::RenderTarget& target,
 
             for (size_t i = 0; i < (size_t)rowCount; ++i) {
                 float rowTop = mTop + mHeaderH + i * mRowH;
-                bool isSelected = ((int)i == ui.selectedSpawnType);
+                const bool waterRow = isWaterRow((int)i, ui.campaignMode, ui.campaignLevel);
+                bool isSelected = waterRow
+                    ? ui.spawnWaterSelected
+                    : ((int)i == ui.selectedSpawnType);
                 bool isEditing = ((int)i == ui.editingCountIndex);
 
                 sf::RectangleShape rowBg(sf::Vector2f(mWidth - 4.0f * S, mRowH - 2.0f * S));
@@ -1896,17 +2571,49 @@ void drawEverything(sf::RenderTarget& target,
                     : sf::Color(35, 35, 40, 120));
                 target.draw(rowBg);
 
+                // L4: серая полоска кулдауна слева-направо внизу строки
+                if (ui.campaignMode && ui.campaignLevel == 4) {
+                    float cdFrac = std::clamp(
+                        1.0f - ui.spawnCooldownTimer / L4_SPAWN_COOLDOWN,
+                        0.0f, 1.0f);
+                    float barH = 3.0f * S;
+                    float barW = mWidth - 4.0f * S;
+                    float barX = mLeft + 2.0f * S;
+                    float barY = rowTop + mRowH - 2.0f * S - barH;
+
+                    sf::RectangleShape track({ barW, barH });
+                    track.setPosition({ barX, barY });
+                    track.setFillColor(sf::Color(20, 20, 25, 200));
+                    target.draw(track);
+
+                    if (cdFrac > 0.0f) {
+                        sf::RectangleShape fill({ barW * cdFrac, barH });
+                        fill.setPosition({ barX, barY });
+                        fill.setFillColor(sf::Color(150, 150, 160, 220));
+                        target.draw(fill);
+                    }
+                }
+
                 sf::CircleShape icon(rIconR);
                 icon.setOrigin({ rIconR, rIconR });
                 icon.setPosition({ mLeft + rIconX, rowTop + mRowH / 2.0f });
-                icon.setFillColor(ATOM_TYPES[i].color);
-                icon.setOutlineColor(atomOutlineColor((int)i));
+                if (waterRow) {
+                    icon.setFillColor(sf::Color(120, 180, 240));
+                    icon.setOutlineColor(sf::Color(70, 120, 190));
+                }
+                else {
+                    icon.setFillColor(ATOM_TYPES[i].color);
+                    icon.setOutlineColor(atomOutlineColor((int)i));
+                }
                 icon.setOutlineThickness(1.5f);
                 target.draw(icon);
 
                 if (fontLoaded) {
                     int nSize = (int)std::round(14.0f * S);
-                    sf::Text nameText(font, locAtomName((int)i, ui.language), nSize);
+                    sf::Text nameText(font,
+                        rowDisplayName((int)i, ui.campaignMode,
+                            ui.campaignLevel, ui.language),
+                        nSize);
                     nameText.setFillColor(sf::Color(220, 220, 220));
                     nameText.setPosition({ mLeft + rNameX, rowTop + 7.0f * S });
                     target.draw(nameText);
@@ -1976,14 +2683,31 @@ void drawEverything(sf::RenderTarget& target,
 
             if (fontLoaded) {
                 int fSize = (int)std::round(12.0f * S);
-                sf::Text footerLabel(font, tr(Loc::BatchSpawnBox, ui.language), fSize);
-                footerLabel.setFillColor(sf::Color(160, 160, 160));
+                sf::String footerText;
+                sf::Color   footerColor(160, 160, 160);
+                if (ui.campaignMode && ui.campaignLevel == 4) {
+                    // L4: вместо «Batch spawn in box:» показываем запас.
+                    footerText = tr(Loc::TaskStockPrefix, ui.language);
+                    footerText += sf::String(":  H ")
+                        + sf::String(std::to_string(ui.stockH))
+                        + sf::String("   O ")
+                        + sf::String(std::to_string(ui.stockO));
+                    footerColor = sf::Color(220, 200, 150);
+                }
+                else {
+                    footerText = tr(Loc::BatchSpawnBox, ui.language);
+                }
+                sf::Text footerLabel(font, footerText, fSize);
+                footerLabel.setFillColor(footerColor);
+                footerLabel.setStyle(sf::Text::Bold);
                 footerLabel.setPosition({ mLeft + 10.0f * S, footerTop + 6.0f * S });
                 target.draw(footerLabel);
             }
 
             // В кампании (уровень 1) кнопка Spawn Batch заблокирована,
             // пока не набрано 5 молекул H2 (фаза 1).
+            // На L4 кнопка доступна: батч-спавн воды сам проверяет
+            // оставшийся запас (stockH/stockO) и препятствия-колонны.
             const bool batchDisabled =
                 ui.campaignMode && ui.campaignLevel == 1 && ui.taskPhase == 1;
 
@@ -2171,7 +2895,11 @@ void drawEverything(sf::RenderTarget& target,
         // ============================================================
         // Панель размера коробки (bottom-left)
         // ============================================================
-        if (!ui.campaignMode) {
+        // Панель Box size показываем в песочнице и на L6 (серой).
+        if (!ui.campaignMode
+            || (ui.campaignMode && ui.campaignLevel == 6))
+        {
+            const bool boxLocked = ui.campaignMode && ui.campaignLevel == 6;
             float pLeft = BOX_PANEL_LEFT * S;
             float pWidth = BOX_PANEL_WIDTH * S;
             float pHeight = BOX_PANEL_HEIGHT * S;
@@ -2200,25 +2928,38 @@ void drawEverything(sf::RenderTarget& target,
                     target.draw(lbl);
                 }
 
+                sf::Color trackCol = boxLocked
+                    ? sf::Color(50, 50, 55) : sf::Color(70, 70, 80);
+                sf::Color fillCol = boxLocked
+                    ? sf::Color(70, 70, 75) : sf::Color(70, 130, 210);
+                sf::Color knobFill = boxLocked
+                    ? sf::Color(70, 70, 75) : sf::Color(90, 160, 240);
+                sf::Color knobOut = boxLocked
+                    ? sf::Color(120, 120, 125) : sf::Color(200, 220, 255);
+                sf::Color lblCol = boxLocked
+                    ? sf::Color(90, 90, 95) : sf::Color(180, 180, 180);
+                sf::Color valCol = boxLocked
+                    ? sf::Color(120, 120, 125) : sf::Color(220, 220, 220);
+
                 sf::RectangleShape track({ tX2 - tX1, BOX_TRACK_THICKNESS * S });
                 track.setOrigin({ 0.0f, BOX_TRACK_THICKNESS * S / 2.0f });
                 track.setPosition({ tX1, rowY });
-                track.setFillColor(sf::Color(70, 70, 80));
+                track.setFillColor(trackCol);
                 target.draw(track);
 
                 float t = boxSizeToPos(size);
                 sf::RectangleShape fill({ (tX2 - tX1) * t, BOX_TRACK_THICKNESS * S });
                 fill.setOrigin({ 0.0f, BOX_TRACK_THICKNESS * S / 2.0f });
                 fill.setPosition({ tX1, rowY });
-                fill.setFillColor(sf::Color(70, 130, 210));
+                fill.setFillColor(fillCol);
                 target.draw(fill);
 
                 float knobR = BOX_KNOB_R * S;
                 sf::CircleShape knob(knobR);
                 knob.setOrigin({ knobR, knobR });
                 knob.setPosition({ tX1 + (tX2 - tX1) * t, rowY });
-                knob.setFillColor(sf::Color(90, 160, 240));
-                knob.setOutlineColor(sf::Color(200, 220, 255));
+                knob.setFillColor(knobFill);
+                knob.setOutlineColor(knobOut);
                 knob.setOutlineThickness(2.0f);
                 target.draw(knob);
 
@@ -2226,7 +2967,7 @@ void drawEverything(sf::RenderTarget& target,
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%.1f", size);
                     sf::Text val(font, buf, (int)std::round(13.0f * S));
-                    val.setFillColor(sf::Color(220, 220, 220));
+                    val.setFillColor(lblCol);
                     sf::FloatRect vb = val.getLocalBounds();
                     val.setOrigin({ vb.position.x, vb.position.y + vb.size.y / 2.0f });
                     val.setPosition({ pLeft + BOX_VALUE_X * S, rowY });
@@ -2237,6 +2978,51 @@ void drawEverything(sf::RenderTarget& target,
             drawBoxSlider(ui.boxSizeX, row1Y, tr(Loc::BoxX, ui.language));
             drawBoxSlider(ui.boxSizeY, row2Y, tr(Loc::BoxY, ui.language));
         }
+
+        // ============================================================
+        // Диалог выбора карты для песочницы
+        // ============================================================
+        if (ui.sandboxAskDialog && fontLoaded) {
+            sf::RectangleShape overlay({ (float)winSize.x, (float)winSize.y });
+            overlay.setFillColor(sf::Color(0, 0, 0, 200));
+            target.draw(overlay);
+
+            float cx = (float)winSize.x * 0.5f;
+
+            // Заголовок
+            {
+                int ts = (int)std::round(36.0f * S);
+                sf::Text title(font, tr(Loc::SandboxAskTitle, ui.language), ts);
+                title.setFillColor(sf::Color(225, 235, 255));
+                title.setStyle(sf::Text::Bold);
+                sf::FloatRect tb = title.getLocalBounds();
+                title.setOrigin({ tb.position.x + tb.size.x * 0.5f,
+                                  tb.position.y + tb.size.y * 0.5f });
+                title.setPosition({ cx, (float)winSize.y * 0.38f });
+                target.draw(title);
+            }
+
+            // Кнопки
+            const float bw = 320.0f * S;
+            const float bh = 60.0f * S;
+            const float gap = 20.0f * S;
+            const float btnY = (float)winSize.y * 0.55f;
+
+            sf::FloatRect defBtn({ cx - bw - gap * 0.5f, btnY - bh * 0.5f },
+                { bw, bh });
+            sf::FloatRect keepBtn({ cx + gap * 0.5f, btnY - bh * 0.5f },
+                { bw, bh });
+
+            sf::Vector2f mpF((float)mousePixel.x, (float)mousePixel.y);
+
+            drawButton(target, font, fontLoaded, defBtn,
+                tr(Loc::SandboxDefault, ui.language),
+                defBtn.contains(mpF), S);
+            drawButton(target, font, fontLoaded, keepBtn,
+                tr(Loc::SandboxKeepLast, ui.language),
+                keepBtn.contains(mpF), S);
+        }
+
 
         // ============================================================
         // Esc / pause menu — поверх всего остального
