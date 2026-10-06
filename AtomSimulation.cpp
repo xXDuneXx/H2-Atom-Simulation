@@ -1265,12 +1265,6 @@ int main() {
 
                                 ui.pillars.clear();
                                 ui.barriers.clear();
-                                ui.activeSpawnZone.active = false;
-                                ui.gravityEnabled = false;
-                                ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
-                                ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
-                                ui.boxSizeX = BOX_DEFAULT;
-                                ui.boxSizeY = BOX_DEFAULT;
 
                                 ui.pillars.push_back({ { L6_START_X, L6_START_Y },
                                     L6_PILLAR_HALF_SIZE });
@@ -1372,12 +1366,6 @@ int main() {
                                 delayedPool.clear();
                                 ui.pillars.clear();
                                 ui.barriers.clear();
-                                ui.activeSpawnZone.active = false;
-                                ui.gravityEnabled = false;
-                                ui.gravityMagnitude = GRAVITY_DEFAULT_MAG;
-                                ui.gravityDirDeg = GRAVITY_DEFAULT_DIR_DEG;
-                                ui.boxSizeX = BOX_DEFAULT;
-                                ui.boxSizeY = BOX_DEFAULT;
 
                                 ui.pillars.push_back({ { -L4_PILLAR_X, 0.0f },
                                     L4_PILLAR_HALF_SIZE });
